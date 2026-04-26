@@ -1,0 +1,17 @@
+{
+  "name": "basic-chaincode",
+  "version": "1.0.0",
+  "description": "Simple test chaincode for Hyperledger Fabric",
+  "main": "index.js",
+  "scripts": {
+    "start": "fabric-chaincode-node start"
+  },
+  "engineStrict": true,
+  "engines": {
+    "node": ">=14"
+  },
+  "dependencies": {
+    "fabric-contract-api": "^2.5.0",
+    "fabric-shim": "^2.5.0"
+  }
+}

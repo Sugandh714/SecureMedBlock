@@ -1,0 +1,15 @@
+{
+  "name": "securemed-dapp",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "setup:network":     "bash scripts/setupNetwork.sh",
+    "setup:chaincode":   "bash scripts/deployChaincode.sh",
+    "setup:identities":  "bash scripts/enrollIdentities.sh",
+    "setup:cpabe":       "bash scripts/setupCpabe.sh",
+    "setup:all":         "npm run setup:network && npm run setup:chaincode && npm run setup:identities && npm run setup:cpabe",
+    "dev:pre":           "cd pre_service && python3 pre_service.py",
+    "dev:backend":       "cd SecureMed/backend && npm run dev",
+    "dev:frontend":      "cd SecureMed/frontend && npm start"
+  }
+}

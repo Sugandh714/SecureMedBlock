@@ -1,0 +1,39 @@
+# Env files
+.env
+
+# Fabric wallet (will be inside securemed)
+securemed/wallet/
+fabric/wallet/
+
+# CP-ABE keys
+pre_service/keys/cpabe_mk.json
+pre_service/keys/sk_abe_*.b64
+
+
+
+node_modules/
+backend/node_modules/
+
+dist/
+build/
+coverage/
+
+backend/dist/
+backend/build/
+backend/coverage/
+
+# Logs
+*.log
+backend/*.log
+
+
+
+__pycache__/
+*.pyc
+.venv/
+
+
+.DS_Store
+Thumbs.db
+
+*.tar.gz
