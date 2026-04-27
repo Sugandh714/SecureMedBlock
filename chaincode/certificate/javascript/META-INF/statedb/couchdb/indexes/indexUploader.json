@@ -1,0 +1,8 @@
+{
+    "index": {
+        "fields": ["uploaderID", "timestamp"]
+    },
+    "ddoc": "indexUploaderDoc",
+    "name": "indexUploader",
+    "type": "json"
+}

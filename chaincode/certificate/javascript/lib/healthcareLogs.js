@@ -4,219 +4,162 @@ const { Contract } = require('fabric-contract-api');
 
 class HealthcareLogs extends Contract {
 
-    // 🔹 Create a new event log
-    async LogEvent(ctx, eventData) {
-        try {
-            const event = JSON.parse(eventData);
+    // ─────────────────────────────────────────
+    // UPLOAD
+    // Stores metadata only.
+    // encryptedCID = CP-ABE ciphertext of IPFS CID.
+    // No plain CID, no file data, no crypto logic.
+    // ─────────────────────────────────────────
 
-            // Basic validation
-            if (!event.sessionID || !event.timestamp || !event.actor || !event.action) {
-                throw new Error('Invalid event structure');
-            }
+    async UploadRecord(ctx, recordID, uploaderID, department, accessPolicy, encryptedCID) {
 
-            const logID = ctx.stub.getTxID();
-
-            const logEntry = {
-                logID,
-                sessionID: event.sessionID,
-                timestamp: event.timestamp,
-
-                actor: {
-                    userID: event.actor.userID,
-                    role: event.actor.role
-                },
-
-                target: event.target || {},
-
-                action: {
-                    type: event.action.type
-                },
-
-                metadata: event.metadata || {}
-            };
-
-            await ctx.stub.putState(logID, Buffer.from(JSON.stringify(logEntry)));
-
-            return JSON.stringify({
-                message: 'Event logged successfully',
-                logID
-            });
-
-        } catch (error) {
-            throw new Error(`LogEvent failed: ${error.message}`);
+        // Prevent duplicate records
+        const existing = await ctx.stub.getState(recordID);
+        if (existing && existing.length > 0) {
+            throw new Error(`Record "${recordID}" already exists on the ledger.`);
         }
+
+        // Validate required fields
+        if (!recordID || !uploaderID || !department || !accessPolicy || !encryptedCID) {
+            throw new Error('All fields are required: recordID, uploaderID, department, accessPolicy, encryptedCID');
+        }
+
+        const record = {
+            recordID,
+            uploaderID,
+            department,
+            timestamp:    Math.floor(Date.now() / 1000),  // Unix seconds
+            accessPolicy, // e.g. "dept::cardiology AND role::doctor"
+            encryptedCID  // CP-ABE encrypted IPFS CID — never a plain CID
+        };
+
+        await ctx.stub.putState(recordID, Buffer.from(JSON.stringify(record)));
+
+        // Emit event so backend can listen for uploads
+        ctx.stub.setEvent(
+            'RecordUploaded',
+            Buffer.from(JSON.stringify({ recordID, uploaderID, department }))
+        );
+
+        return JSON.stringify(record);
     }
 
-    // 🔹 Get log by ID
-    async GetLogByID(ctx, logID) {
-        const data = await ctx.stub.getState(logID);
+    // ─────────────────────────────────────────
+    // GET SINGLE RECORD
+    // ─────────────────────────────────────────
 
+    async GetRecord(ctx, recordID) {
+        const data = await ctx.stub.getState(recordID);
         if (!data || data.length === 0) {
-            throw new Error('Log not found');
+            throw new Error(`Record "${recordID}" does not exist.`);
         }
-
         return data.toString();
     }
 
-    // 🔹 Get all logs (Admin use)
-    async GetAllLogs(ctx) {
-        const iterator = await ctx.stub.getStateByRange('', '');
-        const results = [];
+    // ─────────────────────────────────────────
+    // QUERY BY DEPARTMENT
+    // Returns all records where:
+    //   department matches AND timestamp <= requestTimestamp
+    // Requester then attempts CP-ABE decrypt of each encryptedCID.
+    // Only records matching their attributes will succeed.
+    // ─────────────────────────────────────────
 
-        let result = await iterator.next();
-
-        while (!result.done) {
-            const value = result.value.value.toString('utf8');
-
-            try {
-                results.push(JSON.parse(value));
-            } catch (err) {
-                results.push(value);
-            }
-
-            result = await iterator.next();
+    async QueryByDepartment(ctx, department, requestTimestamp) {
+        const ts = parseInt(requestTimestamp);
+        if (isNaN(ts)) {
+            throw new Error('requestTimestamp must be a valid Unix timestamp integer.');
         }
 
+        const queryString = JSON.stringify({
+            selector: {
+                department: department,
+                timestamp:  { $lte: ts }
+            },
+    sort: [{ department: 'desc' }, { timestamp: 'desc' }]
+        });
+
+        const iterator = await ctx.stub.getQueryResult(queryString);
+        const results  = [];
+
+        while (true) {
+            const res = await iterator.next();
+            if (res.done) break;
+            if (res.value && res.value.value) {
+                try {
+                    const record = JSON.parse(res.value.value.toString('utf8'));
+                    results.push(record);
+                } catch (_) {
+                    // Skip malformed records
+                }
+            }
+        }
+
+        await iterator.close();
         return JSON.stringify(results);
     }
 
-    // 🔹 Query logs by patientID
-    async GetLogsByPatient(ctx, patientID) {
-        const iterator = await ctx.stub.getStateByRange('', '');
-        const results = [];
+    // ─────────────────────────────────────────
+    // QUERY BY UPLOADER
+    // Patient uses this to see all their own records
+    // ─────────────────────────────────────────
 
-        let result = await iterator.next();
-
-        while (!result.done) {
-            const value = JSON.parse(result.value.value.toString('utf8'));
-
-            if (value.target && value.target.patientID === patientID) {
-                results.push(value);
+    async QueryByUploader(ctx, uploaderID) {
+        const queryString = JSON.stringify({
+            selector: {
+                uploaderID: uploaderID
             }
+        });
 
-            result = await iterator.next();
+        const iterator = await ctx.stub.getQueryResult(queryString);
+        const results  = [];
+
+        while (true) {
+            const res = await iterator.next();
+            if (res.done) break;
+            if (res.value && res.value.value) {
+                try {
+                    results.push(JSON.parse(res.value.value.toString('utf8')));
+                } catch (_) {}
+            }
         }
 
+        await iterator.close();
         return JSON.stringify(results);
     }
 
-    // 🔹 Query logs by doctorID
-    async GetLogsByDoctor(ctx, doctorID) {
-        const iterator = await ctx.stub.getStateByRange('', '');
-        const results = [];
+    // ─────────────────────────────────────────
+    // RECORD EXISTS
+    // Lightweight check before upload
+    // ─────────────────────────────────────────
 
-        let result = await iterator.next();
-
-        while (!result.done) {
-            const value = JSON.parse(result.value.value.toString('utf8'));
-
-            if (
-                (value.actor && value.actor.userID === doctorID) ||
-                (value.target && value.target.doctorID === doctorID)
-            ) {
-                results.push(value);
-            }
-
-            result = await iterator.next();
-        }
-
-        return JSON.stringify(results);
+    async RecordExists(ctx, recordID) {
+        const data = await ctx.stub.getState(recordID);
+        return JSON.stringify(!!(data && data.length > 0));
     }
 
-    // 🔹 Query logs by document ID
-    async GetLogsByDocID(ctx, docID) {
-        const iterator = await ctx.stub.getStateByRange('', '');
-        const results = [];
+    // ─────────────────────────────────────────
+    // DELETE RECORD
+    // Only the original uploader can delete
+    // ─────────────────────────────────────────
 
-        let result = await iterator.next();
-
-        while (!result.done) {
-            const value = JSON.parse(result.value.value.toString('utf8'));
-
-            if (value.target && value.target.docID === docID) {
-                results.push(value);
-            }
-
-            result = await iterator.next();
-        }
-
-        return JSON.stringify(results);
-    }
-
-    // 🔹 Query logs by action type
-    async GetLogsByAction(ctx, actionType) {
-        const iterator = await ctx.stub.getStateByRange('', '');
-        const results = [];
-
-        let result = await iterator.next();
-
-        while (!result.done) {
-            const value = JSON.parse(result.value.value.toString('utf8'));
-
-            if (value.action && value.action.type === actionType) {
-                results.push(value);
-            }
-
-            result = await iterator.next();
-        }
-
-        return JSON.stringify(results);
-    }
-        // 🔹 Store Record Hash (IPFS integrity layer)
-    async StoreRecordHash(ctx, recordId, hash) {
-        try {
-            if (!recordId || !hash) {
-                throw new Error("Missing recordId or hash");
-            }
-
-            const existing = await ctx.stub.getState(recordId);
-
-            let recordEntry = {
-                recordId,
-                hash,
-                timestamp: new Date().toISOString()
-            };
-
-            // If record already exists, preserve history
-            if (existing && existing.length > 0) {
-                const prev = JSON.parse(existing.toString());
-                recordEntry.previousHash = prev.hash;
-                recordEntry.version = (prev.version || 1) + 1;
-            } else {
-                recordEntry.version = 1;
-            }
-
-            await ctx.stub.putState(
-                recordId,
-                Buffer.from(JSON.stringify(recordEntry))
-            );
-
-            return JSON.stringify({
-                message: "Record hash stored successfully",
-                recordId
-            });
-
-        } catch (error) {
-            throw new Error(`StoreRecordHash failed: ${error.message}`);
-        }
-    }
-        // 🔹 Verify Record Hash
-    async VerifyRecordHash(ctx, recordId, hashToCheck) {
-        const data = await ctx.stub.getState(recordId);
-
+    async DeleteRecord(ctx, recordID, requestingUserID) {
+        const data = await ctx.stub.getState(recordID);
         if (!data || data.length === 0) {
-            throw new Error("Record not found");
+            throw new Error(`Record "${recordID}" does not exist.`);
         }
 
         const record = JSON.parse(data.toString());
+        if (record.uploaderID !== requestingUserID) {
+            throw new Error(`Access denied. Only the uploader can delete record "${recordID}".`);
+        }
 
-        const isValid = record.hash === hashToCheck;
+        await ctx.stub.deleteState(recordID);
+        ctx.stub.setEvent(
+            'RecordDeleted',
+            Buffer.from(JSON.stringify({ recordID, deletedBy: requestingUserID }))
+        );
 
-        return JSON.stringify({
-            recordId,
-            isValid,
-            storedHash: record.hash
-        });
+        return JSON.stringify({ success: true, recordID });
     }
 }
 

@@ -1,9 +1,9 @@
 {
-  "name": "basic-chaincode",
-  "version": "1.0.0",
-  "description": "Simple test chaincode for Hyperledger Fabric",
-  "main": "index.js",
-  "scripts": {
+    "name": "healthcarelogs",
+    "version": "1.0.0",
+    "description": "Hyperledger Fabric chaincode for SecureMed healthcare records",
+    "main": "index.js",
+    "scripts": {
     "start": "fabric-chaincode-node start"
   },
   "engineStrict": true,

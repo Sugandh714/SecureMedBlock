@@ -4,7 +4,7 @@ set -e
 FABRIC_SAMPLES=${FABRIC_SAMPLES_PATH:-"$HOME/fabric-samples"}
 NETWORK_DIR="$FABRIC_SAMPLES/test-network"
 CC_SRC="$(pwd)/chaincode/certificate/javascript"
-CC_NAME="healthrecords"
+CC_NAME="healthcareLogs"
 CC_VERSION="1.0"
 CC_SEQUENCE="1"
 CHANNEL="mychannel"

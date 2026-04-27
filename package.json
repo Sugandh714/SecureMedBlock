@@ -3,13 +3,31 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "setup:network":     "bash scripts/setupNetwork.sh",
-    "setup:chaincode":   "bash scripts/deployChaincode.sh",
-    "setup:identities":  "bash scripts/enrollIdentities.sh",
-    "setup:cpabe":       "bash scripts/setupCpabe.sh",
-    "setup:all":         "npm run setup:network && npm run setup:chaincode && npm run setup:identities && npm run setup:cpabe",
-    "dev:pre":           "cd pre_service && python3 pre_service.py",
-    "dev:backend":       "cd SecureMed/backend && npm run dev",
-    "dev:frontend":      "cd SecureMed/frontend && npm start"
+    "setup:network": "bash scripts/setupNetwork.sh",
+    "setup:chaincode": "bash scripts/deployChaincode.sh",
+    "setup:identities": "bash scripts/enrollIdentities.sh",
+    "setup:cpabe": "bash scripts/setupCpabe.sh",
+    "setup:all": "npm run setup:network && npm run setup:chaincode && npm run setup:identities && npm run setup:cpabe",
+    "dev:pre": "cd pre_service && python3 pre_service.py",
+    "dev:backend": "cd SecureMed/backend && npm run dev",
+    "dev:frontend": "cd SecureMed/frontend && npm start"
+  },
+  "description": "Secure Med extension with blockchain and cryptography techniques",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sugandh714/SecureMedBlock.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Sugandh714/SecureMedBlock/issues"
+  },
+  "homepage": "https://github.com/Sugandh714/SecureMedBlock#readme",
+  "dependencies": {
+    "fabric-ca-client": "^2.2.20",
+    "fabric-network": "^2.2.20"
   }
 }
