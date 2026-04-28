@@ -20,22 +20,32 @@ export async function preEncrypt(pkBase64, fileBuffer) {
 }
 
 // ── Owner generates re-encryption key fragment for doctor ─────────────────────
-// skOwner is sent over TLS and NEVER stored server-side
-export async function preRekey(skOwnerBase64, pkDoctorBase64) {
+export async function preRekey(skOwnerBase64, pkDoctorBase64, ctKemBase64) {
+  console.log("preRekey - ct_kem length:", ctKemBase64?.length);
+  console.log("preRekey - ct_kem defined:", ctKemBase64 !== undefined);
+  
   const res = await axios.post(`${PRE_URL}/pre/rekey`, {
     sk_owner:  skOwnerBase64,
-    pk_doctor: pkDoctorBase64
+    pk_doctor: pkDoctorBase64,
+    ct_kem:    ctKemBase64
+  }, {
+    headers: { 'Content-Type': 'application/json' },
+    maxBodyLength: Infinity
   });
-  return res.data.kfrags[0]; // single kfrag (threshold=1)
+  return res.data;
 }
-
-// ── Proxy applies re-encryption — NO plaintext ever produced ──────────────────
-export async function preReencrypt(capsuleBase64, kfragBase64) {
+export async function preReencrypt(rekeyBundle, originalBundle, pkOwner) {
   const res = await axios.post(`${PRE_URL}/pre/reencrypt`, {
-    capsule: capsuleBase64,
-    kfrag:   kfragBase64
+    ct_kem2:     rekeyBundle.ct_kem2,
+    key_capsule: rekeyBundle.key_capsule,
+    kc_nonce:    rekeyBundle.kc_nonce,
+    kc_tag:      rekeyBundle.kc_tag,
+    ct_file:     originalBundle.ct_file,
+    nonce:       originalBundle.nonce,
+    tag:         originalBundle.tag,
+    pk_owner:    pkOwner
   });
-  return res.data.cfrag;
+  return res.data;
 }
 
 // ── CP-ABE: encrypt IPFS CID under access policy ─────────────────────────────

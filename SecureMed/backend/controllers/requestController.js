@@ -91,28 +91,51 @@ export const approveRequest = async (req, res) => {
     if (!record) {
       return res.status(404).json({ success: false, message: "Record not found" });
     }
+// ── 1. Fetch encrypted bundle from IPFS ─────────────────────────────
+console.log("📥 Fetching encrypted bundle from IPFS...");
+const bundle = await fetchEncryptedBundle(record.ipfsCid);
+console.log("Bundle keys:", Object.keys(bundle));
+console.log("ct_kem present:", !!bundle.ct_kem);
+console.log("ct_kem length:", bundle.ct_kem?.length);
 
-    // ── 1. Generate re-key fragment (patient's SK used here, not stored) ────
-    console.log("🔑 Generating re-encryption key fragment...");
-    const kfrag = await preRekey(skOwner, accessReq.pkDoctor);
+// ── 2. Patient generates re-encryption material ──────────────────────
+console.log("🔑 Generating PQ re-encryption key material...");
+const rekeyResult = await preRekey(
+  skOwner,
+  accessReq.pkDoctor,
+  bundle.ct_kem        // ← USE bundle.ct_kem DIRECTLY, not record.capsule
+);
+//     // ── 1. Fetch encrypted bundle from IPFS ─────────────────────────────
+// console.log("📥 Fetching encrypted bundle from IPFS...");
+// const bundle = await fetchEncryptedBundle(record.ipfsCid);
+// console.log("Bundle keys:", Object.keys(bundle));
+// console.log("ct_kem present:", !!bundle.ct_kem);
+// // ── 2. Patient generates re-encryption material ──────────────────────
+// console.log("🔑 Generating PQ re-encryption key material...");
+// const rekeyResult = await preRekey(
+//   skOwner,
+//   accessReq.pkDoctor,
+//   record.ct_kem       // ct_kem stored in MongoDB
+// );
+// rekeyResult = { ct_kem2, key_capsule, kc_nonce, kc_tag }
+console.log("ct_kem from record.capsule:", record.capsule?.substring(0, 30));
+console.log("ct_kem from bundle:", bundle.ct_kem?.substring(0, 30));
+console.log("Are they equal:", record.capsule === bundle.ct_kem);
+// In requestController.js, add right after fetching record:
+console.log("record.capsule length:", record.capsule?.length);
+console.log("record.capsule type:", typeof record.capsule);
+console.log("bundle.ct_kem length:", bundle.ct_kem?.length);
+console.log("Are they same:", record.capsule === bundle.ct_kem);
+// ── 3. Proxy bundles re-encrypted material — NO plaintext produced ───
+console.log("🔄 Proxy bundling re-encrypted material...");
+const reencBundle = await preReencrypt(rekeyResult, bundle, record.pkOwner);
 
-    // ── 2. Fetch encrypted bundle from IPFS ─────────────────────────────────
-    console.log("📥 Fetching encrypted bundle from IPFS:", record.ipfsCid);
-    const bundle = await fetchEncryptedBundle(record.ipfsCid);
-
-    // ── 3. Proxy re-encrypts capsule — NO plaintext produced ────────────────
-    console.log("🔄 Re-encrypting capsule (proxy operation)...");
-    const cfrag = await preReencrypt(bundle.capsule, kfrag);
-
-    // ── 4. Upload re-encrypted bundle to IPFS ───────────────────────────────
-    console.log("📤 Uploading re-encrypted bundle to IPFS...");
-    const reencCid = await uploadReencryptedBundle(
-      cfrag,
-      bundle.capsule,
-      bundle.ciphertext,
-      record.pkOwner,
-      `reenc_${accessReq.doctorId}_${record._id}`
-    );
+// ── 4. Upload re-encrypted bundle to IPFS ───────────────────────────
+console.log("📤 Uploading re-encrypted bundle to IPFS...");
+const reencCid = await uploadReencryptedBundle(
+  reencBundle,
+  `reenc_${accessReq.doctorId}_${record._id}`
+);
 
     // ── 5. Update access request ─────────────────────────────────────────────
     accessReq.status     = "approved";

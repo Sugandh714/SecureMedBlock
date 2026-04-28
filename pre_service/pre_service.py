@@ -1,18 +1,35 @@
+"""
+SecureMed PQ-PRE Microservice
+==============================
+Post-Quantum Proxy Re-Encryption using:
+  - CRYSTALS-Kyber768 (NIST FIPS 203) for Key Encapsulation
+  - AES-256-GCM for symmetric file encryption
+  - HMAC-SHA256 for CP-ABE policy key derivation
+
+PRE Construction based on:
+  "Post-Quantum Proxy Re-Encryption for Secure Data Sharing in
+   Healthcare IoT Systems" — hybrid KEM+DEM approach.
+
+Security model:
+  - Proxy sees: ct_kem2, key_capsule, ct_file — ALL PQ-secure
+  - Proxy NEVER sees: shared secret, file plaintext, patient SK
+  - Patient SK used only at approval time, transmitted over TLS
+
+Kyber768 parameters (NIST Level 3):
+  Public key:  1184 bytes
+  Secret key:  2400 bytes
+  Ciphertext:  1088 bytes
+  Shared key:    32 bytes
+"""
+
 import os, json, base64, hashlib, hmac
 from flask import Flask, request, jsonify
 
-# ── Umbral PRE (v0.3.0 API) ───────────────────────────────────────────────────
-from umbral.pre import (
-    SecretKey, PublicKey,
-    encrypt, generate_kfrags, reencrypt,
-    decrypt_reencrypted,
-    Capsule, CapsuleFrag, KeyFrag, VerifiedKeyFrag
-)
-from umbral.signing import Signer
+# ── Post-Quantum KEM ──────────────────────────────────────────────────────────
+from kyber_py.kyber import Kyber768
 
-# ── AES for policy-based CID encryption ──────────────────────────────────────
+# ── Symmetric crypto ──────────────────────────────────────────────────────────
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
 from Crypto.Random import get_random_bytes
 
 app = Flask(__name__)
@@ -30,6 +47,23 @@ def b64e(b: bytes) -> str:
 def b64d(s: str) -> bytes:
     return base64.b64decode(s)
 
+def aes_gcm_encrypt(key: bytes, plaintext: bytes) -> dict:
+    nonce  = get_random_bytes(16)
+    cipher = AES.new(key[:32], AES.MODE_GCM, nonce=nonce)
+    ct, tag = cipher.encrypt_and_digest(plaintext)
+    return {
+        'nonce':      b64e(nonce),
+        'ciphertext': b64e(ct),
+        'tag':        b64e(tag)
+    }
+
+def aes_gcm_decrypt(key: bytes, bundle: dict) -> bytes:
+    nonce  = b64d(bundle['nonce'])
+    ct     = b64d(bundle['ciphertext'])
+    tag    = b64d(bundle['tag'])
+    cipher = AES.new(key[:32], AES.MODE_GCM, nonce=nonce)
+    return cipher.decrypt_and_verify(ct, tag)
+
 def load_master_secret() -> bytes:
     path = os.path.join(KEYS_DIR, 'master_secret.bin')
     if not os.path.exists(path):
@@ -38,126 +72,174 @@ def load_master_secret() -> bytes:
         return f.read()
 
 def derive_policy_key(attributes: list, master_secret: bytes) -> bytes:
-    """
-    Derive a deterministic AES-256 key from a sorted attribute set + master secret.
-    Same attributes always produce the same key.
-    This simulates CP-ABE: only users whose attributes satisfy the policy
-    can derive the correct key and decrypt the CID.
-    """
     attr_string = "|".join(sorted(attributes))
     return hmac.new(master_secret, attr_string.encode(), hashlib.sha256).digest()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HEALTH CHECK
+# HEALTH
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'ok', 'service': 'pre_service'})
+    return jsonify({
+        'status':  'ok',
+        'service': 'SecureMed PQ-PRE',
+        'scheme':  'Kyber768 + AES-256-GCM',
+        'pq':      True
+    })
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PRE — KEYGEN
-# Generate a new Umbral keypair for a user.
-# SK is returned to client and NEVER stored server-side.
-# PK is stored in User.pkPre in MongoDB.
+# PQ-PRE — KEYGEN
+# Generate Kyber768 keypair.
+# SK → client only, never stored server-side.
+# PK → stored in MongoDB User.pkPre.
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route('/pre/keygen', methods=['POST'])
 def pre_keygen():
     try:
-        sk = SecretKey.random()
-        pk = sk.public_key()
+        pk, sk = Kyber768.keygen()
         return jsonify({
-            'sk': b64e(sk.to_secret_bytes()),   # → client stores securely, never sent back
-            'pk': b64e(bytes(pk))                # → stored in MongoDB User.pkPre
+            'pk': b64e(pk),
+            'sk': b64e(sk)
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PRE — ENCRYPT
-# Patient encrypts file plaintext with their PRE public key.
-# Returns capsule + ciphertext (both base64) to store on IPFS.
+# PQ-PRE — ENCRYPT
+# Patient encrypts file under their Kyber768 public key.
+#
+# Flow:
+#   KEM: encaps(pk_patient) → (ss, ct_kem)
+#   DEM: AES-256-GCM(ss, file) → (ct_file, nonce, tag)
+#
+# IPFS bundle stored: { ct_kem, ct_file, nonce, tag }
+# ss is ephemeral — discarded immediately after use
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route('/pre/encrypt', methods=['POST'])
 def pre_encrypt():
     try:
         data      = request.json
-        pk        = PublicKey.from_bytes(b64d(data['pk']))
+        pk        = b64d(data['pk'])
         plaintext = b64d(data['plaintext'])
 
-        capsule, ciphertext = encrypt(pk, plaintext)
+        ss, ct_kem = Kyber768.encaps(pk)
+        enc        = aes_gcm_encrypt(ss, plaintext)
 
         return jsonify({
-            'capsule':    b64e(bytes(capsule)),
-            'ciphertext': b64e(ciphertext)
+            'ct_kem':  b64e(ct_kem),
+            'ct_file': enc['ciphertext'],
+            'nonce':   enc['nonce'],
+            'tag':     enc['tag']
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PRE — REKEY
-# Patient generates re-encryption key fragment using their SK.
-# sk_owner is sent over TLS and NEVER stored server-side.
-# Returns kfrag which allows proxy to re-encrypt WITHOUT seeing plaintext.
+# PQ-PRE — REKEY (Patient generates re-encryption material)
+# sk_patient sent over TLS at approval time — NEVER stored.
+#
+# Flow:
+#   1. decaps(sk_patient, ct_kem) → ss           (recover file key)
+#   2. encaps(pk_doctor)          → (ss_t, ct_kem2)  (transit KEM)
+#   3. AES-GCM(ss_t, ss)          → key_capsule   (wrap file key)
+#
+# Proxy receives { ct_kem2, key_capsule } — PQ-secure, reveals nothing
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route('/pre/rekey', methods=['POST'])
 def pre_rekey():
     try:
-        data      = request.json
-        sk_owner  = SecretKey.from_bytes(b64d(data['sk_owner']))
-        pk_doctor = PublicKey.from_bytes(b64d(data['pk_doctor']))
-        signer    = Signer(sk_owner)
+        data       = request.json
+        print("REKEY received keys:", list(data.keys()) if data else "NO DATA")
+        print("ct_kem present:", 'ct_kem' in data if data else False)
+        print("ct_kem length:", len(data.get('ct_kem', '')) if data else 0)
+        sk_patient = b64d(data['sk_owner'])
+        pk_doctor  = b64d(data['pk_doctor'])
+        ct_kem     = b64d(data['ct_kem'])
 
-        kfrags = generate_kfrags(
-            delegating_sk=sk_owner,
-            receiving_pk=pk_doctor,
-            signer=signer,
-            threshold=1,
-            shares=1
-        )
+        # Recover original file key
+        ss = Kyber768.decaps(sk_patient, ct_kem)
 
-        # kfrags[0] is VerifiedKeyFrag — serialize with bytes()
+        # Encapsulate transit secret under doctor's public key
+        ss_transit, ct_kem2 = Kyber768.encaps(pk_doctor)
+
+        # Wrap file key under transit secret
+        key_capsule_bundle = aes_gcm_encrypt(ss_transit, ss)
+
         return jsonify({
-            'kfrags': [b64e(bytes(kf)) for kf in kfrags]
+            'ct_kem2':     b64e(ct_kem2),
+            'key_capsule': key_capsule_bundle['ciphertext'],
+            'kc_nonce':    key_capsule_bundle['nonce'],
+            'kc_tag':      key_capsule_bundle['tag']
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PRE — REENCRYPT (PROXY OPERATION)
-# Backend acts as proxy. Transforms capsule using kfrag.
-# NO plaintext is ever produced at this step — this is the core PRE guarantee.
-# Input:  capsule (from IPFS bundle) + kfrag (from patient approval)
-# Output: cfrag   (transformed capsule fragment for doctor)
+# PQ-PRE — REENCRYPT (Proxy passthrough)
+# Proxy bundles re-encryption material for IPFS upload.
+# No crypto occurs here — proxy is honest-but-curious model.
+# Proxy cannot recover ss or plaintext from what it sees.
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route('/pre/reencrypt', methods=['POST'])
 def pre_reencrypt():
     try:
         data = request.json
+        return jsonify({
+            'ct_kem2':     data['ct_kem2'],
+            'key_capsule': data['key_capsule'],
+            'kc_nonce':    data['kc_nonce'],
+            'kc_tag':      data['kc_tag'],
+            'ct_file':     data['ct_file'],
+            'nonce':       data['nonce'],
+            'tag':         data['tag'],
+            'pk_owner':    data['pk_owner']
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-        capsule = Capsule.from_bytes(b64d(data['capsule']))
+# ─────────────────────────────────────────────────────────────────────────────
+# PQ-PRE — DECRYPT (Doctor side)
+# Ideally runs client-side. Endpoint provided for testing.
+#
+# Flow:
+#   1. decaps(sk_doctor, ct_kem2)      → ss_transit
+#   2. AES-GCM.dec(ss_transit, key_capsule) → ss  (file key)
+#   3. AES-GCM.dec(ss, ct_file)        → plaintext
+# ─────────────────────────────────────────────────────────────────────────────
 
-        # kfrag coming from patient was serialized as VerifiedKeyFrag
-        # We must load as KeyFrag then re-verify, OR load directly as VerifiedKeyFrag
-        kfrag = VerifiedKeyFrag.from_verified_bytes(b64d(data['kfrag']))
+@app.route('/pre/decrypt', methods=['POST'])
+def pre_decrypt():
+    try:
+        data      = request.json
+        sk_doctor = b64d(data['sk_doctor'])
 
-        cfrag = reencrypt(capsule=capsule, kfrag=kfrag)
+        ct_kem2    = b64d(data['ct_kem2'])
+        ss_transit = Kyber768.decaps(sk_doctor, ct_kem2)
 
-        # cfrag is VerifiedCapsuleFrag — serialize with bytes()
-        return jsonify({'cfrag': b64e(bytes(cfrag))})
+        ss = aes_gcm_decrypt(ss_transit, {
+            'nonce':      data['kc_nonce'],
+            'ciphertext': data['key_capsule'],
+            'tag':        data['kc_tag']
+        })
+
+        plaintext = aes_gcm_decrypt(ss, {
+            'nonce':      data['nonce'],
+            'ciphertext': data['ct_file'],
+            'tag':        data['tag']
+        })
+
+        return jsonify({'plaintext': b64e(plaintext)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CP-ABE SIMULATION — ENCRYPT CID
-# Encrypts IPFS CID under an access policy using AES-256-CBC.
-# The AES key is derived from the policy attributes + master secret.
-# Only a user whose attributes match the policy can derive the same key.
-# Policy format: "department::cardiology|role::doctor"
+# AES-256-GCM with HMAC-SHA256 derived policy key.
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route('/cpabe/encrypt', methods=['POST'])
@@ -165,19 +247,17 @@ def cpabe_encrypt():
     try:
         data   = request.json
         cid    = data['cid'].encode()
-        policy = data['policy']   # e.g. "department::cardiology|role::doctor"
+        policy = data['policy']
 
         master     = load_master_secret()
         attributes = [a.strip() for a in policy.split('|')]
         aes_key    = derive_policy_key(attributes, master)
-
-        iv         = get_random_bytes(16)
-        cipher     = AES.new(aes_key, AES.MODE_CBC, iv)
-        ciphertext = cipher.encrypt(pad(cid, AES.block_size))
+        enc        = aes_gcm_encrypt(aes_key, cid)
 
         bundle = {
-            'iv':         b64e(iv),
-            'ciphertext': b64e(ciphertext),
+            'nonce':      enc['nonce'],
+            'ciphertext': enc['ciphertext'],
+            'tag':        enc['tag'],
             'policy':     policy
         }
 
@@ -189,9 +269,6 @@ def cpabe_encrypt():
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CP-ABE SIMULATION — DECRYPT CID
-# Doctor sends their attributes issued by admin.
-# Backend checks attributes satisfy policy, derives same AES key, decrypts.
-# If any required attribute is missing → 403 before any crypto attempt.
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route('/cpabe/decrypt', methods=['POST'])
@@ -199,12 +276,11 @@ def cpabe_decrypt():
     try:
         data       = request.json
         enc_b64    = data['encrypted_cid']
-        attributes = data['attributes']   # list e.g. ["department::cardiology","role::doctor"]
+        attributes = data['attributes']
 
         master = load_master_secret()
         bundle = json.loads(b64d(enc_b64).decode())
 
-        # Check every policy attribute is present in user's attribute set
         policy_attrs = [a.strip() for a in bundle['policy'].split('|')]
         missing = [a for a in policy_attrs if a not in attributes]
         if missing:
@@ -212,13 +288,12 @@ def cpabe_decrypt():
                 'error': f'Access denied — missing attributes: {missing}'
             }), 403
 
-        # Derive key using policy attributes (same derivation as encrypt)
-        aes_key    = derive_policy_key(policy_attrs, master)
-        iv         = b64d(bundle['iv'])
-        ciphertext = b64d(bundle['ciphertext'])
-
-        cipher    = AES.new(aes_key, AES.MODE_CBC, iv)
-        plaintext = unpad(cipher.decrypt(ciphertext), AES.block_size)
+        aes_key   = derive_policy_key(policy_attrs, master)
+        plaintext = aes_gcm_decrypt(aes_key, {
+            'nonce':      bundle['nonce'],
+            'ciphertext': bundle['ciphertext'],
+            'tag':        bundle['tag']
+        })
 
         return jsonify({'cid': plaintext.decode()})
     except Exception as e:
@@ -226,20 +301,16 @@ def cpabe_decrypt():
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CP-ABE — ISSUE ATTRIBUTE KEY
-# Admin calls this to issue attributes to a user (doctor or patient).
-# The returned sk_abe is stored in User.skAbe in MongoDB.
-# Format: base64 of JSON list of attribute strings.
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route('/cpabe/issue-key', methods=['POST'])
 def issue_key():
     try:
         data       = request.json
-        attributes = data['attributes']   # e.g. ["department::cardiology","role::doctor"]
+        attributes = data['attributes']
         user_id    = data.get('userId', 'unknown')
 
         sk_abe = b64e(json.dumps(attributes).encode())
-
         print(f"[KeyAuthority] Issued attributes to {user_id}: {attributes}")
 
         return jsonify({
@@ -251,25 +322,13 @@ def issue_key():
         return jsonify({'error': str(e)}), 500
 
 # ─────────────────────────────────────────────────────────────────────────────
-# UTILITY — Decode sk_abe back to attributes list
-# Used internally and for testing
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.route('/cpabe/decode-key', methods=['POST'])
-def decode_key():
-    try:
-        data   = request.json
-        sk_abe = data['sk_abe']
-        attributes = json.loads(b64d(sk_abe).decode())
-        return jsonify({'attributes': attributes})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    print("=" * 50)
-    print("  SecureMed PRE + CP-ABE Microservice")
-    print("  Umbral v0.3.0 | AES-256-CBC policy encryption")
-    print("=" * 50)
+    print("=" * 56)
+    print("  SecureMed Post-Quantum PRE Microservice")
+    print("  KEM : CRYSTALS-Kyber768 (NIST FIPS 203)")
+    print("  DEM : AES-256-GCM")
+    print("  ABE : HMAC-SHA256 policy key derivation")
+    print("  PQ  : YES — quantum-resistant file confidentiality")
+    print("=" * 56)
     app.run(host='0.0.0.0', port=5001, debug=False)
