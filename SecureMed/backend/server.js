@@ -8,11 +8,11 @@ import cors       from "cors";
 import { execFile } from "child_process";
 import path       from "path";
 import { fileURLToPath } from "url";
-import { createRequire } from "module";
 
 import recordRoutes  from "./routes/recordRoutes.js";
 import profileRoutes from "./routes/profileRoutes.js";
 import requestRoutes from "./routes/requestRoutes.js";
+import logRoutes     from "./routes/logRoutes.js";
 
 import {
   register, login,
@@ -30,7 +30,8 @@ const ENROLL_SCRIPT = path.resolve(__dirname, "..", "enrollUser.js");
 const app = express();
 
 /* ─── MIDDLEWARE ──────────────────────────────────── */
-app.use(express.json({ limit: '50mb' }));
+app.use(cors({ origin: "http://localhost:5173", credentials: true }));
+app.use(express.json({ limit: "50mb" }));
 
 /* ─── DATABASE ────────────────────────────────────── */
 mongoose.connect(process.env.MONGO_URI)
@@ -41,8 +42,6 @@ mongoose.connect(process.env.MONGO_URI)
 app.post("/api/auth/register", register);
 app.post("/api/auth/login",    login);
 
-// ── Register PRE public key for a user ────────────────────────────────────────
-// Called after login when user generates their keypair client-side
 app.post("/api/auth/register-key", async (req, res) => {
   try {
     const { userId, pkPre } = req.body;
@@ -59,14 +58,10 @@ app.post("/api/auth/register-key", async (req, res) => {
 /* ─── ADMIN — Doctor application routes ──────────── */
 app.get("/api/auth/applications/pending", getPendingApplications);
 
-// Approve: existing logic + Fabric enroll + CP-ABE key issuance
 app.post("/api/auth/applications/:id/approve", async (req, res) => {
   try {
-    // 1. Run original approval (creates User doc, sends response)
     await approveDoctor(req, res);
 
-    // 2. Post-approval: Fabric enroll + issue CP-ABE attribute key
-    //    Response already sent — run async without blocking
     setImmediate(async () => {
       try {
         const application = await DoctorApplication.findById(req.params.id);
@@ -77,31 +72,23 @@ app.post("/api/auth/applications/:id/approve", async (req, res) => {
 
         const fabricUserId = `doctor_${doctorUser._id.toString()}`;
 
-        // Enroll Fabric identity
         execFile("node", [ENROLL_SCRIPT, fabricUserId, "doctor", application.department],
-          { cwd: path.resolve(__dirname, '..') },
+          { cwd: path.resolve(__dirname, "..") },
           async (err, stdout, stderr) => {
-            if (err) {
-              console.error("❌ Fabric enroll failed:", stderr);
-              return;
-            }
+            if (err) { console.error("❌ Fabric enroll failed:", stderr); return; }
             console.log("✅ Fabric identity enrolled:", stdout.trim());
 
-            // Issue CP-ABE attribute key
             const attrs = [
               `department::${application.department.toLowerCase()}`,
               "role::doctor"
             ];
             const { sk_abe } = await issueAttributeKey(fabricUserId, attrs);
 
-            // Update User with fabricUserId + skAbe
             await User.findByIdAndUpdate(doctorUser._id, {
               fabricUserId,
               fabricEnrolled: true,
               skAbe: sk_abe
             });
-
-            // Update Application with fabricUserId
             await DoctorApplication.findByIdAndUpdate(application._id, { fabricUserId });
 
             console.log(`✅ Doctor ${doctorUser.name} fully provisioned`);
@@ -127,10 +114,11 @@ app.post("/api/auth/applications/:id/reject", rejectDoctor);
 app.use("/api/profile",  profileRoutes);
 app.use("/api/records",  recordRoutes);
 app.use("/api/requests", requestRoutes);
+app.use("/api/logs",     logRoutes);       // ← logs route registered
 
 /* ─── START ───────────────────────────────────────── */
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`   PRE service: ${process.env.PRE_SERVICE_URL || "http://localhost:5001"}`);
 });

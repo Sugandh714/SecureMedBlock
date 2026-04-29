@@ -1,49 +1,62 @@
-import React, { useState } from 'react';
-import { 
-  Users, Bell, Clock, AlertTriangle, 
-  FileText, Upload, Shield, History, User, LogOut 
-} from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Users, Bell, AlertTriangle, FileText, Upload, Shield, History, User, LogOut } from 'lucide-react';
+import { useNavigate } from "react-router-dom";
+import { getProfile } from "../../services/api";
+import { logout } from "../../services/auth";
 
 const DoctorDashboard = () => {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab,       setActiveTab]       = useState('dashboard');
   const [selectedPatient, setSelectedPatient] = useState(null);
+  const [doctor,          setDoctor]          = useState({ name: "", specialty: "", hospital: "" });
 
-  const [doctor, setDoctor] = useState({
-    name: "Dr. Dev Sharma",
-    specialty: "Cardiologist",
-    hospital: "Max Hospital"
-  });
+  const navigate = useNavigate();
 
-  const stats = {
-    totalPatients: 47,
-    pendingRequests: 8,
-    emergencyAlerts: 3,
-    recentActivity: 12
-  };
+  // Load real profile on mount
+  useEffect(() => {
+    getProfile()
+      .then(res => {
+        const d = res?.data || {};
+        setDoctor({
+          name:      d.name         || "Doctor",
+          specialty: d.specialization || d.specialty || "",
+          hospital:  d.hospital     || "",
+        });
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleLogout = () => logout(navigate);
+
+  const stats = { totalPatients: 47, pendingRequests: 8, emergencyAlerts: 3, recentActivity: 12 };
 
   const patients = [
-    { id: 1, name: "Aarav Sharma", age: 45, gender: "Male", condition: "Hypertension", status: "Stable" },
-    { id: 2, name: "Priya Patel", age: 32, gender: "Female", condition: "Diabetes Type 2", status: "Critical" },
-    { id: 3, name: "Rohan Mehra", age: 67, gender: "Male", condition: "Post Cardiac Surgery", status: "Recovering" },
-    { id: 4, name: "Ananya Gupta", age: 28, gender: "Female", condition: "Migraine", status: "Stable" },
+    { id: 1, name: "Aarav Sharma",  age: 45, gender: "Male",   condition: "Hypertension",       status: "Stable"     },
+    { id: 2, name: "Priya Patel",   age: 32, gender: "Female", condition: "Diabetes Type 2",    status: "Critical"   },
+    { id: 3, name: "Rohan Mehra",   age: 67, gender: "Male",   condition: "Post Cardiac Surgery",status: "Recovering" },
+    { id: 4, name: "Ananya Gupta",  age: 28, gender: "Female", condition: "Migraine",            status: "Stable"     },
   ];
 
-  const recentActivity = [
-    { time: "10 min ago", action: "Viewed MRI report of Priya Patel" },
-    { time: "2 hours ago", action: "Requested access to Aarav Sharma's blood reports" },
-    { time: "Yesterday", action: "Uploaded prescription for Rohan Mehra" },
+  const doctorInitial = doctor.name?.split(" ").find(p => p)?.slice(-1)[0]?.toUpperCase() || "D";
+
+  const NAV_ITEMS = [
+    { id: 'dashboard', label: 'Dashboard',        icon: Users          },
+    { id: 'patients',  label: 'My Patients',      icon: Users          },
+    { id: 'records',   label: 'Medical Records',  icon: FileText       },
+    { id: 'requests',  label: 'Access Requests',  icon: Shield         },
+    { id: 'upload',    label: 'Upload Records',   icon: Upload         },
+    { id: 'emergency', label: 'Emergency Access', icon: AlertTriangle  },
+    { id: 'logs',      label: 'Activity Logs',    icon: History        },
+    { id: 'profile',   label: 'My Profile',       icon: User           },
   ];
 
   return (
     <div className="min-h-screen bg-gray-50 flex">
-      
+
       {/* Sidebar */}
       <div className="w-72 bg-white border-r flex flex-col">
         <div className="p-6 border-b">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white">
-              🩺
-            </div>
+            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white text-lg">🩺</div>
             <div>
               <h1 className="text-xl font-bold">SecureMed</h1>
               <p className="text-sm text-gray-500">Doctor Portal</p>
@@ -51,163 +64,162 @@ const DoctorDashboard = () => {
           </div>
         </div>
 
-        <div className="flex-1 p-4">
+        <div className="flex-1 p-4 overflow-y-auto">
           <nav className="space-y-1">
-            {[
-              { id: 'dashboard', label: 'Dashboard', icon: Users },
-              { id: 'patients', label: 'My Patients', icon: Users },
-              { id: 'records', label: 'Medical Records', icon: FileText },
-              { id: 'requests', label: 'Access Requests', icon: Shield },
-              { id: 'upload', label: 'Upload Records', icon: Upload },
-              { id: 'emergency', label: 'Emergency Access', icon: AlertTriangle },
-              { id: 'logs', label: 'Activity Logs', icon: History },
-              { id: 'profile', label: 'My Profile', icon: User },
-            ].map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl ${
-                  activeTab === item.id
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'hover:bg-gray-100'
+            {NAV_ITEMS.map((item) => (
+              <button key={item.id} onClick={() => setActiveTab(item.id)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
+                  activeTab === item.id ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                <item.icon className="w-5 h-5" />
+                <item.icon className="w-5 h-5 flex-shrink-0" />
                 {item.label}
               </button>
             ))}
           </nav>
         </div>
 
-        <div className="p-4 border-t">
-          <div className="flex items-center gap-3 p-3 hover:bg-gray-100 rounded-xl">
-            <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white">
-              {doctor.name.split(" ")[1][0]}
+        {/* Profile + Logout */}
+        <div className="p-4 border-t space-y-1">
+          <div className="flex items-center gap-3 p-3 rounded-xl">
+            <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold">
+              {doctorInitial}
             </div>
-            <div className="flex-1">
-              <p className="font-medium">{doctor.name}</p>
-              <p className="text-xs text-gray-500">
-                {doctor.specialty} • {doctor.hospital}
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-sm truncate">{doctor.name || "—"}</p>
+              <p className="text-xs text-gray-500 truncate">
+                {[doctor.specialty, doctor.hospital].filter(Boolean).join(" • ") || "Doctor"}
               </p>
             </div>
-            <LogOut className="w-5 h-5 text-gray-400" />
           </div>
+
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-red-600 hover:bg-red-50 transition-all"
+          >
+            <LogOut className="w-5 h-5" />
+            Sign Out
+          </button>
         </div>
       </div>
 
       {/* Main */}
-      <div className="flex-1">
-        
+      <div className="flex-1 flex flex-col">
+
         {/* Navbar */}
-        <div className="bg-white border-b px-8 py-4 flex justify-between">
-          <h2 className="text-xl font-semibold capitalize">
-            {activeTab}
-          </h2>
-
+        <div className="bg-white border-b px-8 py-4 flex justify-between items-center">
+          <h2 className="text-xl font-semibold capitalize">{activeTab.replace(/([A-Z])/g, ' $1')}</h2>
           <div className="flex items-center gap-6">
-            <Bell className="w-6 h-6" />
-
+            <Bell className="w-6 h-6 text-gray-500" />
             <div className="text-right">
-              <p className="font-medium">{doctor.name}</p>
+              <p className="font-medium text-sm">{doctor.name || "—"}</p>
               <p className="text-xs text-gray-500">Welcome back 👋</p>
             </div>
           </div>
         </div>
 
         {/* Content */}
-        <div className="p-8">
+        <div className="flex-1 p-8 overflow-y-auto">
 
-          {/* Dashboard */}
           {activeTab === 'dashboard' && (
-            <div className="grid grid-cols-4 gap-6">
-              <div className="bg-white p-6 rounded-xl">
-                <p>Total Patients</p>
-                <h2 className="text-3xl">{stats.totalPatients}</h2>
-              </div>
-
-              <div className="bg-white p-6 rounded-xl">
-                <p>Pending Requests</p>
-                <h2 className="text-3xl">{stats.pendingRequests}</h2>
-              </div>
-
-              <div className="bg-red-100 p-6 rounded-xl">
-                <p>Emergency</p>
-                <h2 className="text-3xl">{stats.emergencyAlerts}</h2>
-              </div>
-
-              <div className="bg-white p-6 rounded-xl">
-                <p>Activity</p>
-                <h2 className="text-3xl">{stats.recentActivity}</h2>
-              </div>
-            </div>
-          )}
-
-          {/* Patients */}
-          {activeTab === 'patients' && (
-            <div className="bg-white rounded-xl p-6">
-              {patients.map(p => (
-                <div key={p.id} className="flex justify-between p-4 border-b">
-                  <p>{p.name}</p>
-                  <button onClick={() => setSelectedPatient(p)}>View</button>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
+              {[
+                { label: "Total Patients",    value: stats.totalPatients,    bg: "bg-white"     },
+                { label: "Pending Requests",  value: stats.pendingRequests,  bg: "bg-white"     },
+                { label: "Emergency Alerts",  value: stats.emergencyAlerts,  bg: "bg-red-50"    },
+                { label: "Recent Activity",   value: stats.recentActivity,   bg: "bg-white"     },
+              ].map(({ label, value, bg }) => (
+                <div key={label} className={`${bg} p-6 rounded-2xl shadow-sm ring-1 ring-slate-100`}>
+                  <p className="text-sm text-gray-500">{label}</p>
+                  <h2 className="text-3xl font-bold mt-1">{value}</h2>
                 </div>
               ))}
             </div>
           )}
 
-          {/* Profile */}
-          {activeTab === 'profile' && (
-            <div className="bg-white rounded-xl p-8 max-w-3xl">
-              <h2 className="text-2xl mb-6">My Profile</h2>
+          {activeTab === 'patients' && (
+            <div className="bg-white rounded-2xl shadow-sm ring-1 ring-slate-100 overflow-hidden">
+              <table className="w-full">
+                <thead className="bg-gray-50 border-b">
+                  <tr>
+                    {["Name", "Age", "Gender", "Condition", "Status", "Action"].map(h => (
+                      <th key={h} className="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {patients.map((p, i) => (
+                    <tr key={p.id} className={`border-b last:border-b-0 hover:bg-gray-50 transition-colors ${i % 2 === 1 ? "bg-gray-50/30" : ""}`}>
+                      <td className="px-5 py-4 font-medium text-gray-800">{p.name}</td>
+                      <td className="px-5 py-4 text-gray-500 text-sm">{p.age}</td>
+                      <td className="px-5 py-4 text-gray-500 text-sm">{p.gender}</td>
+                      <td className="px-5 py-4 text-gray-600 text-sm">{p.condition}</td>
+                      <td className="px-5 py-4">
+                        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                          p.status === "Stable"     ? "bg-green-100 text-green-700" :
+                          p.status === "Critical"   ? "bg-red-100 text-red-700"     :
+                          "bg-amber-100 text-amber-700"
+                        }`}>{p.status}</span>
+                      </td>
+                      <td className="px-5 py-4">
+                        <button onClick={() => setSelectedPatient(p)}
+                          className="text-xs font-semibold text-blue-600 hover:underline">
+                          View
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
-              <div className="flex gap-6 mb-6">
-                <div className="w-20 h-20 bg-blue-500 rounded-full flex items-center justify-center text-white text-xl">
-                  {doctor.name.split(" ")[1][0]}
+          {activeTab === 'profile' && (
+            <div className="bg-white rounded-2xl shadow-sm ring-1 ring-slate-100 p-8 max-w-2xl">
+              <h2 className="text-xl font-bold mb-6 text-gray-800">My Profile</h2>
+              <div className="flex gap-6 mb-8">
+                <div className="w-20 h-20 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white text-2xl font-bold flex-shrink-0">
+                  {doctorInitial}
                 </div>
                 <div>
-                  <p className="text-xl">{doctor.name}</p>
-                  <p>{doctor.specialty}</p>
-                  <p className="text-gray-500">{doctor.hospital}</p>
+                  <p className="text-xl font-semibold text-gray-800">{doctor.name || "—"}</p>
+                  <p className="text-gray-500">{doctor.specialty}</p>
+                  <p className="text-gray-400 text-sm">{doctor.hospital}</p>
                 </div>
               </div>
-
-              <div className="space-y-4">
-                <div className="bg-gray-100 p-4 rounded">
-                  Email: dev.sharma@hospital.com
-                </div>
-                <div className="bg-gray-100 p-4 rounded">
-                  Phone: +91 9876543210
-                </div>
-              </div>
+              <button onClick={handleLogout}
+                className="flex items-center gap-2 px-5 py-3 bg-red-50 text-red-600 rounded-xl font-semibold text-sm hover:bg-red-100 transition-colors">
+                <LogOut className="w-4 h-4" /> Sign Out
+              </button>
             </div>
           )}
 
-          {/* Other Tabs */}
           {['records','requests','upload','emergency','logs'].includes(activeTab) && (
-            <div className="bg-white p-10 text-center rounded-xl">
-              Section Coming Soon 🚀
+            <div className="bg-white p-10 text-center rounded-2xl ring-1 ring-slate-100 shadow-sm">
+              <p className="text-2xl mb-2">🚀</p>
+              <p className="text-gray-500 font-medium">This section is coming soon.</p>
             </div>
           )}
-
         </div>
       </div>
 
-      {/* Patient Modal */}
+      {/* Patient modal */}
       {selectedPatient && (
-        <div className="fixed inset-0 bg-black/50 flex justify-center items-center">
-          <div className="bg-white p-8 rounded-xl w-96">
-            <h2 className="text-xl">{selectedPatient.name}</h2>
-            <p>{selectedPatient.condition}</p>
-
-            <button 
-              onClick={() => setSelectedPatient(null)}
-              className="mt-4 bg-blue-600 text-white px-4 py-2 rounded"
-            >
+        <div className="fixed inset-0 bg-black/40 flex justify-center items-center z-50 p-4">
+          <div className="bg-white p-8 rounded-2xl w-96 shadow-2xl">
+            <h2 className="text-xl font-bold mb-1">{selectedPatient.name}</h2>
+            <p className="text-gray-500 text-sm mb-4">{selectedPatient.condition}</p>
+            <div className="space-y-2 text-sm text-gray-600 mb-6">
+              <p><span className="font-medium">Age:</span> {selectedPatient.age}</p>
+              <p><span className="font-medium">Gender:</span> {selectedPatient.gender}</p>
+              <p><span className="font-medium">Status:</span> {selectedPatient.status}</p>
+            </div>
+            <button onClick={() => setSelectedPatient(null)} className="w-full bg-blue-600 hover:bg-blue-700 text-white px-4 py-3 rounded-xl font-semibold transition-colors">
               Close
             </button>
           </div>
         </div>
       )}
-
     </div>
   );
 };

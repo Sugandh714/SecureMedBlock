@@ -14,6 +14,15 @@ function getPinataHeaders(formData) {
 async function pinBuffer(buffer, filename, contentType) {
   const formData = new FormData();
   formData.append("file", buffer, { filename, contentType });
+  
+  const jwt = process.env.PINATA_JWT?.trim();
+  // DEBUG — remove after fixing
+  console.log("JWT first 20 chars:", jwt?.slice(0, 20));
+  console.log("JWT last 10 chars:",  jwt?.slice(-10));
+  console.log("JWT length:",         jwt?.length);
+  console.log("JWT has newline:",    jwt?.includes("\n"));
+  console.log("JWT has space:",      jwt?.includes(" "));
+
   const res = await axios.post(PINATA_PIN_URL, formData, {
     maxBodyLength: Infinity,
     headers: getPinataHeaders(formData)

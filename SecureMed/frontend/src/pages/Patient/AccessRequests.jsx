@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { getRequests, updateRequestStatus } from "../../services/api";
+import { getRequests, approveRequest, rejectRequest } from "../../services/api";
 
 const STATUS_STYLES = {
   pending:  { bg: "#fef3c7", color: "#92400e", label: "Pending"  },
@@ -36,9 +36,11 @@ function EmptyState() {
 }
 
 export default function AccessRequests() {
-  const [requests, setRequests] = useState([]);
-  const [loading,  setLoading]  = useState(true);
-  const [filter,   setFilter]   = useState("all");
+  const [requests,    setRequests]    = useState([]);
+  const [loading,     setLoading]     = useState(true);
+  const [filter,      setFilter]      = useState("all");
+  // Track which row is mid-request to prevent double-clicks
+  const [actioningId, setActioningId] = useState(null);
 
   useEffect(() => {
     getRequests()
@@ -47,9 +49,28 @@ export default function AccessRequests() {
       .finally(() => setLoading(false));
   }, []);
 
-  const handleStatus = async (id, status) => {
-    await updateRequestStatus(id, status);
-    setRequests(prev => prev.map(r => r._id === id ? { ...r, status } : r));
+  /**
+   * Calls the dedicated POST endpoint for approve or reject,
+   * then updates local state so the row reflects the change immediately.
+   */
+  const handleAction = async (id, action) => {
+    setActioningId(id);
+    try {
+      if (action === "approved") {
+        await approveRequest(id);
+      } else {
+        await rejectRequest(id);
+      }
+      // Optimistic local update
+      setRequests(prev =>
+        prev.map(r => r._id === id ? { ...r, status: action } : r)
+      );
+    } catch (err) {
+      console.error(`Failed to ${action} request ${id}:`, err.message);
+      // Optional: surface error in UI here
+    } finally {
+      setActioningId(null);
+    }
   };
 
   const filtered = filter === "all"
@@ -153,80 +174,107 @@ export default function AccessRequests() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={5} style={{ padding: "60px 0", textAlign: "center", color: "#9ca3af" }}>Loading…</td></tr>
+                <tr>
+                  <td colSpan={5} style={{ padding: "60px 0", textAlign: "center", color: "#9ca3af" }}>
+                    Loading…
+                  </td>
+                </tr>
               ) : filtered.length === 0 ? (
                 <EmptyState />
               ) : (
-                filtered.map((req, i) => (
-                  <tr
-                    key={req._id}
-                    style={{
-                      borderBottom: i < filtered.length - 1 ? "1px solid #f9fafb" : "none",
-                      transition: "background 0.1s",
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.background = "#fafafa"}
-                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                  >
-                    <td style={{ padding: "14px 20px" }}>
-                      <div style={{ fontSize: 14, fontWeight: 500, color: "#111" }}>
-                        {req.requesterName || req.name || "—"}
-                      </div>
-                      <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 1 }}>
-                        {req.requesterEmail || req.email || ""}
-                      </div>
-                    </td>
-                    <td style={{ padding: "14px 20px", fontSize: 14, color: "#374151" }}>
-                      {req.doctorName || req.organization || "—"}
-                    </td>
-                    <td style={{ padding: "14px 20px", fontSize: 14, color: "#374151" }}>
-                      {req.recordTitle || req.record || "Medical Record"}
-                    </td>
-                    <td style={{ padding: "14px 20px" }}>
-                      <StatusBadge status={req.status || "pending"} />
-                    </td>
-                    <td style={{ padding: "14px 20px" }}>
-                      {req.status === "pending" || !req.status ? (
-                        <div style={{ display: "flex", gap: 6 }}>
-                          <button
-                            onClick={() => handleStatus(req._id, "approved")}
-                            style={{
-                              padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 500,
-                              background: "#059669", color: "#fff", border: "none", cursor: "pointer",
-                              transition: "opacity 0.15s",
-                            }}
-                            onMouseEnter={e => e.currentTarget.style.opacity = "0.85"}
-                            onMouseLeave={e => e.currentTarget.style.opacity = "1"}
-                          >
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => handleStatus(req._id, "rejected")}
-                            style={{
-                              padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 500,
-                              background: "#fff", color: "#374151",
-                              border: "1px solid #e8eaed", cursor: "pointer",
-                              transition: "background 0.15s",
-                            }}
-                            onMouseEnter={e => {
-                              e.currentTarget.style.background = "#fee2e2";
-                              e.currentTarget.style.color = "#991b1b";
-                              e.currentTarget.style.borderColor = "#fca5a5";
-                            }}
-                            onMouseLeave={e => {
-                              e.currentTarget.style.background = "#fff";
-                              e.currentTarget.style.color = "#374151";
-                              e.currentTarget.style.borderColor = "#e8eaed";
-                            }}
-                          >
-                            Reject
-                          </button>
+                filtered.map((req, i) => {
+                  const isActioning = actioningId === req._id;
+                  const isPending   = !req.status || req.status === "pending";
+
+                  return (
+                    <tr
+                      key={req._id}
+                      style={{
+                        borderBottom: i < filtered.length - 1 ? "1px solid #f9fafb" : "none",
+                        transition: "background 0.1s",
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = "#fafafa"}
+                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                    >
+                      {/* Requester */}
+                      <td style={{ padding: "14px 20px" }}>
+                        <div style={{ fontSize: 14, fontWeight: 500, color: "#111" }}>
+                          {req.requesterName || req.name || "—"}
                         </div>
-                      ) : (
-                        <span style={{ fontSize: 13, color: "#9ca3af" }}>—</span>
-                      )}
-                    </td>
-                  </tr>
-                ))
+                        <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 1 }}>
+                          {req.requesterEmail || req.email || ""}
+                        </div>
+                      </td>
+
+                      {/* Doctor / Org */}
+                      <td style={{ padding: "14px 20px", fontSize: 14, color: "#374151" }}>
+                        {req.doctorName || req.organization || "—"}
+                      </td>
+
+                      {/* Record */}
+                      <td style={{ padding: "14px 20px", fontSize: 14, color: "#374151" }}>
+                        {req.recordTitle || req.record || "Medical Record"}
+                      </td>
+
+                      {/* Status */}
+                      <td style={{ padding: "14px 20px" }}>
+                        <StatusBadge status={req.status || "pending"} />
+                      </td>
+
+                      {/* Actions */}
+                      <td style={{ padding: "14px 20px" }}>
+                        {isPending ? (
+                          <div style={{ display: "flex", gap: 6 }}>
+                            {/* Approve */}
+                            <button
+                              onClick={() => handleAction(req._id, "approved")}
+                              disabled={isActioning}
+                              style={{
+                                padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 500,
+                                background: isActioning ? "#9ca3af" : "#059669",
+                                color: "#fff", border: "none",
+                                cursor: isActioning ? "not-allowed" : "pointer",
+                                transition: "opacity 0.15s",
+                              }}
+                              onMouseEnter={e => { if (!isActioning) e.currentTarget.style.opacity = "0.85"; }}
+                              onMouseLeave={e => { e.currentTarget.style.opacity = "1"; }}
+                            >
+                              {isActioning ? "…" : "Approve"}
+                            </button>
+
+                            {/* Reject */}
+                            <button
+                              onClick={() => handleAction(req._id, "rejected")}
+                              disabled={isActioning}
+                              style={{
+                                padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 500,
+                                background: "#fff", color: "#374151",
+                                border: "1px solid #e8eaed",
+                                cursor: isActioning ? "not-allowed" : "pointer",
+                                transition: "background 0.15s",
+                              }}
+                              onMouseEnter={e => {
+                                if (isActioning) return;
+                                e.currentTarget.style.background   = "#fee2e2";
+                                e.currentTarget.style.color        = "#991b1b";
+                                e.currentTarget.style.borderColor  = "#fca5a5";
+                              }}
+                              onMouseLeave={e => {
+                                e.currentTarget.style.background  = "#fff";
+                                e.currentTarget.style.color       = "#374151";
+                                e.currentTarget.style.borderColor = "#e8eaed";
+                              }}
+                            >
+                              {isActioning ? "…" : "Reject"}
+                            </button>
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: 13, color: "#9ca3af" }}>—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

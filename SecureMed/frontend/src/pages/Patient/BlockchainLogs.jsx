@@ -1,10 +1,11 @@
-import { useData } from "../../Context/DataContext";
+import { useState, useEffect } from "react";
+import { getLogs } from "../../services/api";
 
 function ChainIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
-      <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
+      <path d="M14 11a5 5 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
     </svg>
   );
 }
@@ -22,20 +23,53 @@ function getActionStyle(action) {
   return ACTION_COLORS[key] || { bg: "#f3f4f6", color: "#374151" };
 }
 
+/**
+ * Normalize whatever shape the backend sends into what LogRow expects:
+ * { action, time, actor, detail, hash }
+ *
+ * Typical backend shapes handled:
+ *  - { action, createdAt, performedBy, description, txHash }  (Fabric / custom)
+ *  - { action, timestamp, user, details, hash }
+ *  - { action, time, actor, detail, hash }                    (already correct)
+ */
+function normalizeLog(raw) {
+  return {
+    action: raw.action || raw.event || "UNKNOWN",
+    time:   raw.time
+              || raw.timestamp
+              || (raw.createdAt ? new Date(raw.createdAt).toLocaleString() : "—"),
+    actor:  raw.actor
+              || raw.user
+              || raw.performedBy
+              || raw.triggeredBy
+              || "System",
+    detail: raw.detail
+              || raw.details
+              || raw.description
+              || raw.message
+              || "",
+    hash:   raw.hash
+              || raw.txHash
+              || raw.fabricTxId
+              || raw.ipfsCid
+              || null,
+  };
+}
+
 function LogRow({ log, isLast }) {
   const style = getActionStyle(log.action);
   return (
-    <div style={{
-      display: "flex",
-      gap: 16,
-      padding: "16px 20px",
-      borderBottom: isLast ? "none" : "1px solid #f9fafb",
-      transition: "background 0.1s",
-    }}
+    <div
+      style={{
+        display: "flex", gap: 16,
+        padding: "16px 20px",
+        borderBottom: isLast ? "none" : "1px solid #f9fafb",
+        transition: "background 0.1s",
+      }}
       onMouseEnter={e => e.currentTarget.style.background = "#fafafa"}
       onMouseLeave={e => e.currentTarget.style.background = "transparent"}
     >
-      {/* Timeline dot */}
+      {/* Timeline column */}
       <div style={{
         display: "flex", flexDirection: "column", alignItems: "center",
         paddingTop: 4, gap: 4, flexShrink: 0,
@@ -70,8 +104,7 @@ function LogRow({ log, isLast }) {
         <div style={{ fontSize: 13, color: "#6b7280", marginTop: 3 }}>{log.detail}</div>
         {log.hash && (
           <div style={{
-            marginTop: 6, fontSize: 11, color: "#9ca3af",
-            fontFamily: "monospace",
+            marginTop: 6, fontSize: 11, color: "#9ca3af", fontFamily: "monospace",
             background: "#f9fafb", borderRadius: 6, padding: "3px 8px",
             display: "inline-block", maxWidth: "100%",
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
@@ -86,17 +119,27 @@ function LogRow({ log, isLast }) {
 
 function EmptyState() {
   return (
-    <div style={{
-      padding: "60px 0", textAlign: "center",
-      color: "#9ca3af", fontSize: 14,
-    }}>
+    <div style={{ padding: "60px 0", textAlign: "center", color: "#9ca3af", fontSize: 14 }}>
       No blockchain logs recorded yet.
     </div>
   );
 }
 
 export default function BlockchainLogs() {
-  const { logs } = useData();
+  const [logs,    setLogs]    = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState(null);
+
+  useEffect(() => {
+    getLogs()
+      .then(res => {
+        // Support { data: [...] }, { logs: [...] }, or a raw array
+        const raw = Array.isArray(res) ? res : (res.data || res.logs || []);
+        setLogs(raw.map(normalizeLog));
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
 
   const actionCounts = logs.reduce((acc, log) => {
     const key = log.action || "OTHER";
@@ -109,6 +152,7 @@ export default function BlockchainLogs() {
 
       {/* Summary row */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+        {/* Total */}
         <div style={{
           flex: 1, minWidth: 110,
           background: "#fff", borderRadius: 14, border: "1px solid #e8eaed",
@@ -118,10 +162,12 @@ export default function BlockchainLogs() {
             Total Events
           </div>
           <div style={{ fontSize: 28, fontWeight: 700, color: "#111", marginTop: 4, letterSpacing: "-0.5px" }}>
-            {logs.length}
+            {loading ? "—" : logs.length}
           </div>
         </div>
-        {Object.entries(actionCounts).slice(0, 3).map(([action, count]) => {
+
+        {/* Per-action counts (first 3) */}
+        {!loading && Object.entries(actionCounts).slice(0, 3).map(([action, count]) => {
           const s = getActionStyle(action);
           return (
             <div key={action} style={{
@@ -140,7 +186,7 @@ export default function BlockchainLogs() {
         })}
       </div>
 
-      {/* Logs timeline card */}
+      {/* Timeline card */}
       <div style={{
         background: "#fff", borderRadius: 16, border: "1px solid #e8eaed",
         overflow: "hidden",
@@ -163,8 +209,16 @@ export default function BlockchainLogs() {
           </div>
         </div>
 
-        {/* Log rows */}
-        {logs.length === 0 ? (
+        {/* Body */}
+        {loading ? (
+          <div style={{ padding: "60px 0", textAlign: "center", color: "#9ca3af", fontSize: 14 }}>
+            Loading logs…
+          </div>
+        ) : error ? (
+          <div style={{ padding: "40px 20px", textAlign: "center", color: "#dc2626", fontSize: 13 }}>
+            {error}
+          </div>
+        ) : logs.length === 0 ? (
           <EmptyState />
         ) : (
           logs.map((log, index) => (

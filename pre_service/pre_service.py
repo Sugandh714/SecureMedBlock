@@ -5,30 +5,12 @@ Post-Quantum Proxy Re-Encryption using:
   - CRYSTALS-Kyber768 (NIST FIPS 203) for Key Encapsulation
   - AES-256-GCM for symmetric file encryption
   - HMAC-SHA256 for CP-ABE policy key derivation
-
-PRE Construction based on:
-  "Post-Quantum Proxy Re-Encryption for Secure Data Sharing in
-   Healthcare IoT Systems" — hybrid KEM+DEM approach.
-
-Security model:
-  - Proxy sees: ct_kem2, key_capsule, ct_file — ALL PQ-secure
-  - Proxy NEVER sees: shared secret, file plaintext, patient SK
-  - Patient SK used only at approval time, transmitted over TLS
-
-Kyber768 parameters (NIST Level 3):
-  Public key:  1184 bytes
-  Secret key:  2400 bytes
-  Ciphertext:  1088 bytes
-  Shared key:    32 bytes
 """
 
 import os, json, base64, hashlib, hmac
 from flask import Flask, request, jsonify
 
-# ── Post-Quantum KEM ──────────────────────────────────────────────────────────
 from kyber_py.kyber import Kyber768
-
-# ── Symmetric crypto ──────────────────────────────────────────────────────────
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 
@@ -90,19 +72,13 @@ def health():
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PQ-PRE — KEYGEN
-# Generate Kyber768 keypair.
-# SK → client only, never stored server-side.
-# PK → stored in MongoDB User.pkPre.
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route('/pre/keygen', methods=['POST'])
 def pre_keygen():
     try:
         pk, sk = Kyber768.keygen()
-        return jsonify({
-            'pk': b64e(pk),
-            'sk': b64e(sk)
-        })
+        return jsonify({ 'pk': b64e(pk), 'sk': b64e(sk) })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -113,9 +89,6 @@ def pre_keygen():
 # Flow:
 #   KEM: encaps(pk_patient) → (ss, ct_kem)
 #   DEM: AES-256-GCM(ss, file) → (ct_file, nonce, tag)
-#
-# IPFS bundle stored: { ct_kem, ct_file, nonce, tag }
-# ss is ephemeral — discarded immediately after use
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route('/pre/encrypt', methods=['POST'])
@@ -138,78 +111,46 @@ def pre_encrypt():
         return jsonify({'error': str(e)}), 500
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PQ-PRE — REKEY (Patient generates re-encryption material)
-# sk_patient sent over TLS at approval time — NEVER stored.
+# PQ-PRE — DECRYPT OWNER (Patient decrypts their own file)
+#
+# This is DIFFERENT from doctor decrypt — patient uses the ORIGINAL ct_kem,
+# not ct_kem2. No re-encryption material involved.
 #
 # Flow:
-#   1. decaps(sk_patient, ct_kem) → ss           (recover file key)
-#   2. encaps(pk_doctor)          → (ss_t, ct_kem2)  (transit KEM)
-#   3. AES-GCM(ss_t, ss)          → key_capsule   (wrap file key)
+#   1. decaps(sk_owner, ct_kem) → ss          (recover file key directly)
+#   2. AES-GCM.dec(ss, ct_file) → plaintext
 #
-# Proxy receives { ct_kem2, key_capsule } — PQ-secure, reveals nothing
+# sk_owner sent over TLS, never stored.
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.route('/pre/rekey', methods=['POST'])
-def pre_rekey():
+@app.route('/pre/decrypt-owner', methods=['POST'])
+def pre_decrypt_owner():
     try:
-        data       = request.json
-        print("REKEY received keys:", list(data.keys()) if data else "NO DATA")
-        print("ct_kem present:", 'ct_kem' in data if data else False)
-        print("ct_kem length:", len(data.get('ct_kem', '')) if data else 0)
-        sk_patient = b64d(data['sk_owner'])
-        pk_doctor  = b64d(data['pk_doctor'])
-        ct_kem     = b64d(data['ct_kem'])
+        data     = request.json
+        sk_owner = b64d(data['sk_owner'])
+        ct_kem   = b64d(data['ct_kem'])
 
-        # Recover original file key
-        ss = Kyber768.decaps(sk_patient, ct_kem)
+        # Recover the shared secret (file key) directly
+        ss = Kyber768.decaps(sk_owner, ct_kem)
 
-        # Encapsulate transit secret under doctor's public key
-        ss_transit, ct_kem2 = Kyber768.encaps(pk_doctor)
-
-        # Wrap file key under transit secret
-        key_capsule_bundle = aes_gcm_encrypt(ss_transit, ss)
-
-        return jsonify({
-            'ct_kem2':     b64e(ct_kem2),
-            'key_capsule': key_capsule_bundle['ciphertext'],
-            'kc_nonce':    key_capsule_bundle['nonce'],
-            'kc_tag':      key_capsule_bundle['tag']
+        # Decrypt the file
+        plaintext = aes_gcm_decrypt(ss, {
+            'nonce':      data['nonce'],
+            'ciphertext': data['ct_file'],
+            'tag':        data['tag']
         })
+
+        return jsonify({'plaintext': b64e(plaintext)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PQ-PRE — REENCRYPT (Proxy passthrough)
-# Proxy bundles re-encryption material for IPFS upload.
-# No crypto occurs here — proxy is honest-but-curious model.
-# Proxy cannot recover ss or plaintext from what it sees.
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.route('/pre/reencrypt', methods=['POST'])
-def pre_reencrypt():
-    try:
-        data = request.json
-        return jsonify({
-            'ct_kem2':     data['ct_kem2'],
-            'key_capsule': data['key_capsule'],
-            'kc_nonce':    data['kc_nonce'],
-            'kc_tag':      data['kc_tag'],
-            'ct_file':     data['ct_file'],
-            'nonce':       data['nonce'],
-            'tag':         data['tag'],
-            'pk_owner':    data['pk_owner']
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PQ-PRE — DECRYPT (Doctor side)
-# Ideally runs client-side. Endpoint provided for testing.
+# PQ-PRE — DECRYPT DOCTOR (Doctor decrypts re-encrypted bundle)
 #
 # Flow:
-#   1. decaps(sk_doctor, ct_kem2)      → ss_transit
-#   2. AES-GCM.dec(ss_transit, key_capsule) → ss  (file key)
-#   3. AES-GCM.dec(ss, ct_file)        → plaintext
+#   1. decaps(sk_doctor, ct_kem2)           → ss_transit
+#   2. AES-GCM.dec(ss_transit, key_capsule) → ss  (original file key)
+#   3. AES-GCM.dec(ss, ct_file)             → plaintext
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route('/pre/decrypt', methods=['POST'])
@@ -238,8 +179,56 @@ def pre_decrypt():
         return jsonify({'error': str(e)}), 500
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PQ-PRE — REKEY (Patient generates re-encryption material)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route('/pre/rekey', methods=['POST'])
+def pre_rekey():
+    try:
+        data       = request.json
+        print("REKEY received keys:", list(data.keys()) if data else "NO DATA")
+        sk_patient = b64d(data['sk_owner'])
+        pk_doctor  = b64d(data['pk_doctor'])
+        ct_kem     = b64d(data['ct_kem'])
+
+        ss = Kyber768.decaps(sk_patient, ct_kem)
+
+        ss_transit, ct_kem2 = Kyber768.encaps(pk_doctor)
+
+        key_capsule_bundle = aes_gcm_encrypt(ss_transit, ss)
+
+        return jsonify({
+            'ct_kem2':     b64e(ct_kem2),
+            'key_capsule': key_capsule_bundle['ciphertext'],
+            'kc_nonce':    key_capsule_bundle['nonce'],
+            'kc_tag':      key_capsule_bundle['tag']
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PQ-PRE — REENCRYPT (Proxy passthrough)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route('/pre/reencrypt', methods=['POST'])
+def pre_reencrypt():
+    try:
+        data = request.json
+        return jsonify({
+            'ct_kem2':     data['ct_kem2'],
+            'key_capsule': data['key_capsule'],
+            'kc_nonce':    data['kc_nonce'],
+            'kc_tag':      data['kc_tag'],
+            'ct_file':     data['ct_file'],
+            'nonce':       data['nonce'],
+            'tag':         data['tag'],
+            'pk_owner':    data['pk_owner']
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CP-ABE SIMULATION — ENCRYPT CID
-# AES-256-GCM with HMAC-SHA256 derived policy key.
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route('/cpabe/encrypt', methods=['POST'])
@@ -261,9 +250,7 @@ def cpabe_encrypt():
             'policy':     policy
         }
 
-        return jsonify({
-            'encrypted_cid': b64e(json.dumps(bundle).encode())
-        })
+        return jsonify({ 'encrypted_cid': b64e(json.dumps(bundle).encode()) })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -284,9 +271,7 @@ def cpabe_decrypt():
         policy_attrs = [a.strip() for a in bundle['policy'].split('|')]
         missing = [a for a in policy_attrs if a not in attributes]
         if missing:
-            return jsonify({
-                'error': f'Access denied — missing attributes: {missing}'
-            }), 403
+            return jsonify({'error': f'Access denied — missing attributes: {missing}'}), 403
 
         aes_key   = derive_policy_key(policy_attrs, master)
         plaintext = aes_gcm_decrypt(aes_key, {

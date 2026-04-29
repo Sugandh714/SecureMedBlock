@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { uploadRecord, fileToBase64 } from "../../services/api";
 
 function UploadIcon() {
   return (
@@ -27,27 +28,29 @@ function LinkIcon() {
 }
 
 const RECORD_TYPES = [
-  { value: "Lab Report",   label: "Lab Report"   },
-  { value: "Prescription", label: "Prescription" },
-  { value: "Imaging",      label: "Imaging"      },
+  { value: "Lab Report",   label: "Lab Report"        },
+  { value: "Prescription", label: "Prescription"      },
+  { value: "Imaging",      label: "Imaging"           },
   { value: "Discharge",    label: "Discharge Summary" },
-  { value: "Vaccination",  label: "Vaccination Record" },
+  { value: "Vaccination",  label: "Vaccination Record"},
 ];
 
 const DEPT_TYPES = [
-  { value: "Cardiology",       label: "Cardiology"       },
-  { value: "Neurology",        label: "Neurology"         },
-  { value: "Radiology",        label: "Radiology"         },
-  { value: "General Medicine", label: "General Medicine"  },
+  { value: "Cardiology",       label: "Cardiology"      },
+  { value: "Neurology",        label: "Neurology"       },
+  { value: "Radiology",        label: "Radiology"       },
+  { value: "General Medicine", label: "General Medicine"},
 ];
 
 export default function UploadRecords() {
   const [title,        setTitle]        = useState("");
   const [type,         setType]         = useState("");
+  const [department,   setDepartment]   = useState("");   // ← was missing
   const [file,         setFile]         = useState(null);
   const [uploading,    setUploading]    = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
   const [dragOver,     setDragOver]     = useState(false);
+  const [error,        setError]        = useState(null);
 
   const handleDrop = (e) => {
     e.preventDefault();
@@ -58,30 +61,43 @@ export default function UploadRecords() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!file || !title || !type) return alert("All fields are required");
+    setError(null);
+
+    if (!file || !title || !type || !department) {
+      setError("All fields are required.");
+      return;
+    }
 
     setUploading(true);
     setUploadResult(null);
 
-    const formData = new FormData();
-    formData.append("title", title);
-    formData.append("type",  type);
-    formData.append("file",  file);
-
     try {
-      const res  = await fetch("http://localhost:5000/api/records/upload", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await res.json();
+      // Convert file → base64 so it travels as JSON (matches backend expectation)
+      const fileBase64 = await fileToBase64(file);
+
+      const payload = {
+        title,
+        type,
+        department,
+        fileName: file.name,
+        mimeType: file.type,
+        fileData:fileBase64,
+      };
+
+      const data = await uploadRecord(payload);   // ← uses api.js (auth header included)
 
       if (data.success) {
         setUploadResult(data.data);
+        // Reset form
+        setTitle("");
+        setType("");
+        setDepartment("");
+        setFile(null);
       } else {
-        alert("Failed: " + data.message);
+        setError(data.message || "Upload failed.");
       }
-    } catch {
-      alert("Server error — is the backend running?");
+    } catch (err) {
+      setError(err.message || "Server error — is the backend running?");
     } finally {
       setUploading(false);
     }
@@ -187,17 +203,9 @@ export default function UploadRecords() {
               value={title}
               onChange={e => setTitle(e.target.value)}
               placeholder="e.g. MRI Brain Scan — Jan 2025"
-              style={{
-                ...selectStyle, cursor: "text",
-              }}
-              onFocus={e => {
-                e.target.style.background = "#fff";
-                e.target.style.borderColor = "#10b981";
-              }}
-              onBlur={e => {
-                e.target.style.background = "#f9fafb";
-                e.target.style.borderColor = "#e8eaed";
-              }}
+              style={{ ...selectStyle, cursor: "text" }}
+              onFocus={e => { e.target.style.background = "#fff"; e.target.style.borderColor = "#10b981"; }}
+              onBlur={e =>  { e.target.style.background = "#f9fafb"; e.target.style.borderColor = "#e8eaed"; }}
             />
           </div>
 
@@ -212,19 +220,27 @@ export default function UploadRecords() {
             </select>
           </div>
 
-          {/* Dept */}
+          {/* Department — now controlled */}
           <div>
             <label style={labelStyle}>Department</label>
-            <select
-              onChange={() => {}}
-              style={selectStyle}
-            >
+            <select value={department} onChange={e => setDepartment(e.target.value)} style={selectStyle}>
               <option value="">Select department…</option>
               {DEPT_TYPES.map(t => (
                 <option key={t.value} value={t.value}>{t.label}</option>
               ))}
             </select>
           </div>
+
+          {/* Inline error */}
+          {error && (
+            <div style={{
+              fontSize: 13, color: "#dc2626",
+              background: "#fef2f2", border: "1px solid #fecaca",
+              borderRadius: 8, padding: "8px 12px",
+            }}>
+              {error}
+            </div>
+          )}
 
           {/* Submit */}
           <button
@@ -264,9 +280,7 @@ export default function UploadRecords() {
           background: "#f0fdf4", border: "1px solid #bbf7d0",
           borderRadius: 16, padding: "20px 22px",
         }}>
-          <div style={{
-            display: "flex", alignItems: "center", gap: 10, marginBottom: 14,
-          }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
             <div style={{
               width: 32, height: 32, borderRadius: 8,
               background: "#d1fae5", color: "#059669",
@@ -280,44 +294,56 @@ export default function UploadRecords() {
           </div>
 
           {[
-            { label: "Title",     value: uploadResult.title    },
-            { label: "File",      value: uploadResult.fileName },
-          ].map(row => (
-            <div key={row.label} style={{
-              display: "flex", gap: 10, marginBottom: 8,
-              fontSize: 13,
-            }}>
+            { label: "Title", value: uploadResult.title    },
+            { label: "File",  value: uploadResult.fileName },
+            { label: "Type",  value: uploadResult.type     },
+          ].map(row => row.value && (
+            <div key={row.label} style={{ display: "flex", gap: 10, marginBottom: 8, fontSize: 13 }}>
               <span style={{ color: "#9ca3af", minWidth: 50 }}>{row.label}</span>
               <span style={{ color: "#111", fontWeight: 500 }}>{row.value}</span>
             </div>
           ))}
 
-          <div style={{ marginTop: 12 }}>
-            <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 6 }}>IPFS Link</div>
-            <a
-              href={uploadResult.ipfsUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                display: "inline-flex", alignItems: "center", gap: 6,
-                fontSize: 13, color: "#059669", textDecoration: "none",
-                fontWeight: 500,
-                wordBreak: "break-all",
-              }}
-            >
-              <LinkIcon />
-              {uploadResult.ipfsUrl}
-            </a>
-          </div>
+          {uploadResult.ipfsUrl && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 6 }}>IPFS Link</div>
+              <a
+                href={uploadResult.ipfsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 6,
+                  fontSize: 13, color: "#059669", textDecoration: "none",
+                  fontWeight: 500, wordBreak: "break-all",
+                }}
+              >
+                <LinkIcon />
+                {uploadResult.ipfsUrl}
+              </a>
+            </div>
+          )}
 
-          <div style={{
-            marginTop: 10,
-            fontFamily: "monospace", fontSize: 11, color: "#9ca3af",
-            background: "#fff", borderRadius: 8, padding: "6px 10px",
-            border: "1px solid #e8eaed",
-          }}>
-            CID: {uploadResult.ipfsCid}
-          </div>
+          {uploadResult.ipfsCid && (
+            <div style={{
+              marginTop: 10,
+              fontFamily: "monospace", fontSize: 11, color: "#9ca3af",
+              background: "#fff", borderRadius: 8, padding: "6px 10px",
+              border: "1px solid #e8eaed",
+            }}>
+              CID: {uploadResult.ipfsCid}
+            </div>
+          )}
+
+          {uploadResult.fabricRecordId && (
+            <div style={{
+              marginTop: 8,
+              fontFamily: "monospace", fontSize: 11, color: "#9ca3af",
+              background: "#fff", borderRadius: 8, padding: "6px 10px",
+              border: "1px solid #e8eaed",
+            }}>
+              Fabric TX: {uploadResult.fabricRecordId}
+            </div>
+          )}
         </div>
       )}
     </div>

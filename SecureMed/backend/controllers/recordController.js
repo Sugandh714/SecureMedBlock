@@ -1,12 +1,11 @@
 // backend/controllers/recordController.js
 import { v4 as uuidv4 }   from "uuid";
 import Record              from "../models/Record.js";
-import { preEncrypt, cpAbeEncrypt, cpAbeDecrypt } from "../services/preService.js";
+import { preEncrypt, preDecrypt, cpAbeEncrypt, cpAbeDecrypt } from "../services/preService.js";
 import { uploadEncryptedBundle, fetchEncryptedBundle, gatewayUrl } from "../services/ipfsService.js";
 import { uploadRecord as fabricUpload, queryByDepartment } from "../services/fabricService.js";
 
 // ── POST /api/records/upload ──────────────────────────────────────────────────
-// Accepts JSON: { title, type, accessPolicy, fileName, fileData (base64) }
 export const uploadRecord = async (req, res) => {
   try {
     const { title, type, accessPolicy, fileName, fileData } = req.body;
@@ -31,43 +30,32 @@ export const uploadRecord = async (req, res) => {
       });
     }
 
-    // Convert base64 to buffer
     const fileBuffer = Buffer.from(fileData, "base64");
 
-    // ── 1. PRE-encrypt ────────────────────────────────────────────────
     console.log("🔐 Encrypting file with PQ-Kyber768...");
     const encResult = await preEncrypt(pkOwner, fileBuffer);
 
-    // ── 2. Upload to IPFS ─────────────────────────────────────────────
     console.log("📤 Uploading to IPFS...");
     const ipfsCid = await uploadEncryptedBundle(encResult, fileName);
     console.log("✅ IPFS CID:", ipfsCid);
 
-    // ── 3. CP-ABE encrypt CID ─────────────────────────────────────────
-    const policy = accessPolicy || `department::${department}|role::doctor`;
+    const policy       = accessPolicy || `department::${department}|role::doctor`;
     const encryptedCID = await cpAbeEncrypt(ipfsCid, policy);
 
-    // ── 4. Write to Fabric ────────────────────────────────────────────
     const fabricRecordId = uuidv4();
     await fabricUpload({
       userId:       fabricUserId || "admin",
       recordID:     fabricRecordId,
       uploaderID:   userId,
-      department:   department,
+      department,
       accessPolicy: policy,
-      encryptedCID: encryptedCID
+      encryptedCID
     });
 
-    // ── 5. Save to MongoDB ────────────────────────────────────────────
     const newRecord = new Record({
-      title,
-      type,
-      fileName,
-      ipfsCid,
-      fabricRecordId,
-      encryptedCID,
-      accessPolicy:     policy,
-      capsule:          encResult.ct_kem,
+      title, type, fileName, ipfsCid, fabricRecordId, encryptedCID,
+      accessPolicy: policy,
+      capsule:      encResult.ct_kem,
       userId,
       uploaderFabricId: fabricUserId || "admin",
       pkOwner
@@ -77,23 +65,12 @@ export const uploadRecord = async (req, res) => {
     res.status(201).json({
       success: true,
       message: "File encrypted, stored on IPFS and anchored on blockchain",
-      data: {
-        title,
-        fileName,
-        ipfsCid,
-        fabricRecordId,
-        accessPolicy: policy,
-        ipfsUrl:      gatewayUrl(ipfsCid)
-      }
+      data: { title, fileName, ipfsCid, fabricRecordId, accessPolicy: policy, ipfsUrl: gatewayUrl(ipfsCid) }
     });
 
   } catch (error) {
     console.error("❌ Upload Error:", error.stack || error);
-    res.status(500).json({
-      success: false,
-      message: error.message,
-      stack:   error.stack
-    });
+    res.status(500).json({ success: false, message: error.message, stack: error.stack });
   }
 };
 
@@ -104,6 +81,48 @@ export const getRecords = async (req, res) => {
       .sort({ uploadedAt: -1 });
     res.json({ success: true, data: records });
   } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── POST /api/records/:id/decrypt ─────────────────────────────────────────────
+// Patient decrypts their OWN file for preview/download.
+// skOwner is sent over TLS and NEVER stored — used only for this request.
+export const decryptRecord = async (req, res) => {
+  try {
+    const { skOwner } = req.body;
+    if (!skOwner) {
+      return res.status(400).json({ success: false, message: "skOwner is required" });
+    }
+
+    const record = await Record.findById(req.params.id);
+    if (!record) {
+      return res.status(404).json({ success: false, message: "Record not found" });
+    }
+
+    // Only the owner can decrypt
+    if (record.userId !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
+
+    console.log(`🔓 Patient ${req.user.name} decrypting record "${record.title}"...`);
+
+    // Fetch encrypted bundle from IPFS
+    const bundle = await fetchEncryptedBundle(record.ipfsCid);
+
+    // Decrypt using patient's private key — plaintext never stored
+    const result = await preDecrypt(skOwner, bundle);
+
+    // result.plaintext is base64 of original file bytes
+    res.json({
+      success:   true,
+      plaintext: result.plaintext,   // base64 — client decodes and triggers download
+      fileName:  record.fileName,
+      mimeType:  guessMime(record.fileName),
+    });
+
+  } catch (error) {
+    console.error("❌ Decrypt Error:", error.message);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -127,9 +146,7 @@ export const discoverRecords = async (req, res) => {
     const fabricId         = user.fabricUserId || "admin";
 
     console.log(`🔍 Doctor ${user.name} discovering in dept: ${queryDept}`);
-    const fabricRecords = await queryByDepartment({
-      userId: fabricId, department: queryDept, requestTimestamp
-    });
+    const fabricRecords = await queryByDepartment({ userId: fabricId, department: queryDept, requestTimestamp });
 
     const accessible = [];
     for (const rec of fabricRecords) {
@@ -144,3 +161,16 @@ export const discoverRecords = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// ── Helper ────────────────────────────────────────────────────────────────────
+function guessMime(fileName = "") {
+  const ext = fileName.split(".").pop().toLowerCase();
+  const map = {
+    pdf:  "application/pdf",
+    jpg:  "image/jpeg", jpeg: "image/jpeg",
+    png:  "image/png",
+    txt:  "text/plain",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  };
+  return map[ext] || "application/octet-stream";
+}

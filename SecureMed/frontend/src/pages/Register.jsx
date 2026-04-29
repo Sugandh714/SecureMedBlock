@@ -1,78 +1,95 @@
 import React, { useState } from 'react';
 import { ShieldCheck, User, Stethoscope, ArrowLeft } from 'lucide-react';
+import { registerUser } from "../services/api";
 
-const Register = () => {
-  const [role, setRole] = useState('patient'); // 'patient' or 'doctor'
-  const [formData, setFormData] = useState({
-    fullName: '',
-    email: '',
-    password: '',
-    confirmPassword: '',
-    phone: '',
-    // Doctor specific fields
-    medicalId: '',
-    specialization: '',
-    department: '',
-    hospital: '',
-  });
-  const [loading, setLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
-
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
-  };
-
-const handleRegister = async (e) => {
-  e.preventDefault();
-  setLoading(true);
-
-  try {
-    const payload = {
-      name: formData.fullName,
-      email: formData.email,
-      password: formData.password,
-      role
-    };
-
-    // Add doctor-specific fields only if registering as doctor
-    if (role === 'doctor') {
-      payload.medicalId = formData.medicalId;
-      payload.specialization = formData.specialization;
-      payload.department = formData.department;
-      payload.phone = formData.phone || "";
-      payload.experience = formData.experience || "";
-      payload.hospital = formData.hospital || "City General Hospital";
-    }
-
-    const res = await fetch("http://localhost:5000/api/auth/register", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    const data = await res.json();
-
-    if (res.ok) {
-      setSuccess(true);
-    } else {
-      alert(data.message || "Registration failed");
-    }
-  } catch (err) {
-    console.error(err);
-    alert("Server error. Please check console.");
-  }
-
-  setLoading(false);
+const SPECIALIZATIONS = [
+  "Cardiology", "Neurology", "Orthopaedics", "Oncology",
+  "Dermatology", "Gynaecology", "Psychiatry", "General Medicine",
+  "Paediatrics", "Radiology", "Emergency Medicine",
+];
+const DEPARTMENTS = [
+  "Cardiology", "Neurology", "Surgery", "Oncology",
+  "Skin & Hair", "Women Health", "Mental Health", "General",
+  "Paediatrics", "Radiology", "Emergency",
+];
+const EMPTY_FORM = {
+  fullName: '', email: '', password: '', confirmPassword: '',
+  phone: '', medicalId: '', specialization: '', department: '',
+  hospital: '', experience: '',
 };
 
-  const resetForm = () => {
-    setFormData({
-      fullName: '', email: '', password: '', confirmPassword: '', phone: '',
-      medicalId: '', specialization: '', department: '', hospital: ''
-    });
-    setSuccess(false);
+const Register = () => {
+  const [role,     setRole]     = useState('patient');
+  const [formData, setFormData] = useState(EMPTY_FORM);
+  const [loading,  setLoading]  = useState(false);
+  const [success,  setSuccess]  = useState(false);
+  const [error,    setError]    = useState('');
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+    if (error) setError('');
   };
+
+  const validate = () => {
+    if (!formData.fullName.trim())  return "Full name is required.";
+    if (!formData.email.trim())     return "Email is required.";
+    if (!formData.phone.trim())     return "Phone number is required.";
+    if (formData.password.length < 6) return "Password must be at least 6 characters.";
+    if (formData.password !== formData.confirmPassword) return "Passwords do not match.";
+    if (role === 'doctor') {
+      if (!formData.medicalId.trim())      return "Medical Registration ID is required.";
+      if (!formData.specialization.trim()) return "Specialization is required.";
+      if (!formData.department.trim())     return "Department is required.";
+      if (!formData.hospital.trim())       return "Hospital / Clinic name is required.";
+    }
+    return null;
+  };
+
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    setError('');
+    const validationError = validate();
+    if (validationError) { setError(validationError); return; }
+
+    setLoading(true);
+    try {
+      const payload = {
+        name: formData.fullName.trim(), email: formData.email.trim(),
+        password: formData.password, phone: formData.phone.trim(), role,
+      };
+      if (role === 'doctor') {
+        payload.medicalId      = formData.medicalId.trim();
+        payload.specialization = formData.specialization;
+        payload.department     = formData.department;
+        payload.hospital       = formData.hospital.trim();
+        payload.experience     = formData.experience.trim();
+      }
+
+      const data = await registerUser(payload);
+
+      // ── Save private key ──────────────────────────────────────────────
+      // Backend generates PRE keypair and returns skPre ONCE.
+      // Public key is already stored server-side (pkPre on User document).
+      // We key it by email so Login can look it up after sign-in.
+      if (data.skPre) {
+        const storageKey = `skPre_${formData.email.trim().toLowerCase()}`;
+        localStorage.setItem(storageKey, data.skPre);
+        console.log("🔑 PRE private key saved to localStorage.");
+      }
+
+      setSuccess(true);
+    } catch (err) {
+      setError(err.message || "Registration failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resetForm = () => { setFormData(EMPTY_FORM); setSuccess(false); setError(''); };
+
+  const inputCls = "w-full px-5 py-4 border border-gray-300 rounded-2xl focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-all text-sm";
+  const labelCls = "block text-sm font-medium text-gray-700 mb-2";
 
   if (success) {
     return (
@@ -81,28 +98,28 @@ const handleRegister = async (e) => {
           <div className="mx-auto w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mb-6">
             <ShieldCheck className="w-12 h-12 text-green-600" />
           </div>
-          
           <h2 className="text-3xl font-semibold text-gray-900 mb-3">
-            {role === 'patient' ? 'Account Created Successfully!' : 'Registration Request Submitted'}
+            {role === 'patient' ? 'Account Created!' : 'Application Submitted'}
           </h2>
-          
-          <p className="text-gray-600 mb-8 leading-relaxed">
-            {role === 'patient' 
-              ? 'Your patient account has been created. You can now login to your dashboard.' 
-              : 'Thank you! Your doctor registration request has been sent to the Admin for verification. Once approved, you will receive your login credentials via email.'}
+          <p className="text-gray-600 mb-6 leading-relaxed">
+            {role === 'patient'
+              ? 'Your account is ready and your encryption keys have been set up automatically.'
+              : 'Your doctor registration is pending admin review. You will receive credentials via email once approved.'}
           </p>
-
-          <div className="space-y-4">
-            <button
-              onClick={() => window.location.href = '/login'}
-              className="w-full bg-teal-600 hover:bg-teal-700 text-white font-semibold py-4 rounded-2xl transition-all"
-            >
+          {role === 'patient' && (
+            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-2xl text-left">
+              <p className="text-xs font-semibold text-amber-800 mb-1">🔑 Encryption Key Saved</p>
+              <p className="text-xs text-amber-700 leading-relaxed">
+                Your private encryption key has been saved to this browser. Do not clear browser
+                data without exporting your key, or you will lose access to your encrypted records.
+              </p>
+            </div>
+          )}
+          <div className="space-y-3">
+            <a href="/login" className="block w-full bg-teal-600 hover:bg-teal-700 text-white font-semibold py-4 rounded-2xl transition-all text-center">
               Go to Login
-            </button>
-            <button
-              onClick={resetForm}
-              className="w-full border border-teal-200 text-teal-600 font-medium py-3 rounded-2xl hover:bg-gray-50"
-            >
+            </a>
+            <button onClick={resetForm} className="w-full border border-teal-200 text-teal-600 font-medium py-3 rounded-2xl hover:bg-gray-50 transition-all">
               Register Another Account
             </button>
           </div>
@@ -114,7 +131,6 @@ const handleRegister = async (e) => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-teal-700 via-cyan-800 to-sky-900 flex items-center justify-center p-6">
       <div className="w-full max-w-lg">
-        {/* Header */}
         <div className="text-center mb-8">
           <div className="flex items-center justify-center gap-3 mb-4">
             <ShieldCheck className="w-12 h-12 text-white" />
@@ -126,176 +142,95 @@ const handleRegister = async (e) => {
         <div className="bg-white rounded-3xl shadow-2xl overflow-hidden">
           <div className="px-8 pt-8 pb-6">
             <div className="flex items-center gap-3 mb-6">
-              <button 
-                onClick={() => window.location.href = '/login'}
-                className="text-gray-500 hover:text-gray-700 transition-colors"
-              >
-                <ArrowLeft size={24} />
-              </button>
-              <h2 className="text-3xl font-semibold text-gray-900">Create New Account</h2>
+              <a href="/login" className="text-gray-400 hover:text-gray-600 transition-colors"><ArrowLeft size={24} /></a>
+              <h2 className="text-2xl font-semibold text-gray-900">Create New Account</h2>
             </div>
 
-            {/* Role Selector */}
             <div className="flex bg-gray-100 rounded-2xl p-1 mb-8">
-              <button
-                onClick={() => setRole('patient')}
-                className={`flex-1 py-3 text-sm font-medium rounded-xl transition-all flex items-center justify-center gap-2
-                  ${role === 'patient' ? 'bg-white shadow-md text-teal-700' : 'text-gray-600 hover:bg-gray-50'}`}
-              >
-                <User className="w-4 h-4" /> Patient
-              </button>
-              <button
-                onClick={() => setRole('doctor')}
-                className={`flex-1 py-3 text-sm font-medium rounded-xl transition-all flex items-center justify-center gap-2
-                  ${role === 'doctor' ? 'bg-white shadow-md text-teal-700' : 'text-gray-600 hover:bg-gray-50'}`}
-              >
-                <Stethoscope className="w-4 h-4" /> Doctor
-              </button>
+              {[{ id: 'patient', label: 'Patient', Icon: User }, { id: 'doctor', label: 'Doctor', Icon: Stethoscope }].map(({ id, label, Icon }) => (
+                <button key={id} type="button" onClick={() => { setRole(id); setError(''); }}
+                  className={`flex-1 py-3 text-sm font-medium rounded-xl transition-all flex items-center justify-center gap-2 ${role === id ? 'bg-white shadow-md text-teal-700' : 'text-gray-600 hover:bg-gray-50'}`}>
+                  <Icon className="w-4 h-4" /> {label}
+                </button>
+              ))}
             </div>
+
+            {error && (
+              <div className="mb-6 p-4 bg-red-50 border border-red-200 text-red-700 rounded-2xl text-sm">{error}</div>
+            )}
 
             <form onSubmit={handleRegister} className="space-y-5">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Full Name</label>
-                <input
-                  type="text"
-                  name="fullName"
-                  value={formData.fullName}
-                  onChange={handleInputChange}
-                  required
-                  className="w-full px-5 py-4 border border-gray-300 rounded-2xl focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-200"
-                  placeholder={role === 'doctor' ? "Dr. Amit Sharma" : "Priya Verma"}
-                />
+                <label className={labelCls}>Full Name</label>
+                <input type="text" name="fullName" value={formData.fullName} onChange={handleChange} required
+                  className={inputCls} placeholder={role === 'doctor' ? "Dr. Amit Sharma" : "Priya Verma"} />
               </div>
-
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Email Address</label>
-                <input
-                  type="email"
-                  name="email"
-                  value={formData.email}
-                  onChange={handleInputChange}
-                  required
-                  className="w-full px-5 py-4 border border-gray-300 rounded-2xl focus:outline-none focus:border-teal-500"
-                  placeholder="you@example.com"
-                />
+                <label className={labelCls}>Email Address</label>
+                <input type="email" name="email" value={formData.email} onChange={handleChange} required className={inputCls} placeholder="you@example.com" />
               </div>
-
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Phone Number</label>
-                <input
-                  type="tel"
-                  name="phone"
-                  value={formData.phone}
-                  onChange={handleInputChange}
-                  required
-                  className="w-full px-5 py-4 border border-gray-300 rounded-2xl focus:outline-none focus:border-teal-500"
-                  placeholder="+91 98765 43210"
-                />
+                <label className={labelCls}>Phone Number</label>
+                <input type="tel" name="phone" value={formData.phone} onChange={handleChange} required className={inputCls} placeholder="+91 98765 43210" />
               </div>
 
-              {/* Doctor Specific Fields */}
               {role === 'doctor' && (
                 <>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Medical Registration ID (MCI / State Council)</label>
-                    <input
-                      type="text"
-                      name="medicalId"
-                      value={formData.medicalId}
-                      onChange={handleInputChange}
-                      required
-                      className="w-full px-5 py-4 border border-gray-300 rounded-2xl focus:outline-none focus:border-teal-500"
-                      placeholder="MCI-45678"
-                    />
+                    <label className={labelCls}>Medical Registration ID</label>
+                    <input type="text" name="medicalId" value={formData.medicalId} onChange={handleChange} required className={inputCls} placeholder="MCI-45678" />
                   </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Specialization</label>
-                    <input
-                      type="text"
-                      name="specialization"
-                      value={formData.specialization}
-                      onChange={handleInputChange}
-                      required
-                      className="w-full px-5 py-4 border border-gray-300 rounded-2xl focus:outline-none focus:border-teal-500"
-                      placeholder="Cardiology, Neurology, Pediatrics, etc."
-                    />
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelCls}>Specialization</label>
+                      <select name="specialization" value={formData.specialization} onChange={handleChange} required className={inputCls}>
+                        <option value="">Select…</option>
+                        {SPECIALIZATIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className={labelCls}>Department</label>
+                      <select name="department" value={formData.department} onChange={handleChange} required className={inputCls}>
+                        <option value="">Select…</option>
+                        {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+                      </select>
+                    </div>
                   </div>
-
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Department</label>
-                    <input
-                      type="text"
-                      name="department"
-                      value={formData.department}
-                      onChange={handleInputChange}
-                      required
-                      className="w-full px-5 py-4 border border-gray-300 rounded-2xl focus:outline-none focus:border-teal-500"
-                      placeholder="Emergency Medicine, General Surgery, ICU, etc."
-                    />
+                    <label className={labelCls}>Hospital / Clinic Name</label>
+                    <input type="text" name="hospital" value={formData.hospital} onChange={handleChange} required className={inputCls} placeholder="AIIMS Delhi, Fortis Hospital, etc." />
                   </div>
-
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Hospital / Clinic Name</label>
-                    <input
-                      type="text"
-                      name="hospital"
-                      value={formData.hospital}
-                      onChange={handleInputChange}
-                      required
-                      className="w-full px-5 py-4 border border-gray-300 rounded-2xl focus:outline-none focus:border-teal-500"
-                      placeholder="AIIMS Delhi, Fortis Hospital, etc."
-                    />
+                    <label className={labelCls}>Years of Experience</label>
+                    <input type="text" name="experience" value={formData.experience} onChange={handleChange} className={inputCls} placeholder="e.g. 8 years" />
                   </div>
                 </>
               )}
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
-                <input
-                  type="password"
-                  name="password"
-                  value={formData.password}
-                  onChange={handleInputChange}
-                  required
-                  className="w-full px-5 py-4 border border-gray-300 rounded-2xl focus:outline-none focus:border-teal-500"
-                  placeholder="Create a strong password"
-                />
+                <label className={labelCls}>Password</label>
+                <input type="password" name="password" value={formData.password} onChange={handleChange} required className={inputCls} placeholder="At least 6 characters" />
               </div>
-
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Confirm Password</label>
-                <input
-                  type="password"
-                  name="confirmPassword"
-                  value={formData.confirmPassword}
-                  onChange={handleInputChange}
-                  required
-                  className="w-full px-5 py-4 border border-gray-300 rounded-2xl focus:outline-none focus:border-teal-500"
-                  placeholder="Re-enter password"
-                />
+                <label className={labelCls}>Confirm Password</label>
+                <input type="password" name="confirmPassword" value={formData.confirmPassword} onChange={handleChange} required
+                  className={`${inputCls} ${formData.confirmPassword && formData.confirmPassword !== formData.password ? 'border-red-400 focus:ring-red-400' : ''}`}
+                  placeholder="Re-enter password" />
+                {formData.confirmPassword && formData.confirmPassword !== formData.password && (
+                  <p className="text-xs text-red-500 mt-1.5">Passwords do not match</p>
+                )}
               </div>
 
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full mt-6 bg-teal-600 hover:bg-teal-700 disabled:bg-teal-400 text-white font-semibold py-4 rounded-2xl text-lg transition-all flex items-center justify-center"
-              >
-                {loading 
-                  ? "Processing..." 
-                  : role === 'patient' 
-                    ? "Create Patient Account" 
-                    : "Submit Doctor Registration Request"}
+              <button type="submit" disabled={loading}
+                className="w-full mt-2 bg-teal-600 hover:bg-teal-700 disabled:opacity-70 disabled:cursor-not-allowed text-white font-semibold py-4 rounded-2xl text-base transition-all">
+                {loading ? "Processing…" : role === 'patient' ? "Create Patient Account" : "Submit Doctor Registration"}
               </button>
             </form>
           </div>
-
           <div className="border-t border-gray-100 px-8 py-6 text-center">
             <p className="text-gray-600">
               Already have an account?{' '}
-              <a href="/login" className="text-teal-600 font-semibold hover:underline">
-                Sign in here
-              </a>
+              <a href="/login" className="text-teal-600 font-semibold hover:underline">Sign in here</a>
             </p>
           </div>
         </div>
