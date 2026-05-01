@@ -3,7 +3,6 @@ const API_BASE = "http://localhost:5000/api";
 
 const apiCall = async (endpoint, options = {}) => {
   const token = localStorage.getItem("token");
-
   let response;
   try {
     response = await fetch(`${API_BASE}${endpoint}`, {
@@ -16,21 +15,18 @@ const apiCall = async (endpoint, options = {}) => {
   } catch {
     throw new Error("Network error — is the backend running?");
   }
-
   let data;
   try {
     data = await response.json();
   } catch {
     throw new Error(`Server returned non-JSON response (status ${response.status})`);
   }
-
   if (!response.ok) throw new Error(data.message || "API Error");
   return data;
 };
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Convert a File object → base64 string (strips the data-URL prefix) */
 export const fileToBase64 = (file) =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -39,60 +35,58 @@ export const fileToBase64 = (file) =>
     reader.readAsDataURL(file);
   });
 
-// ── Auth ───────────────────────────────────────────────────────────────────
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+export const loginUser    = (payload) => apiCall("/auth/login",    { method: "POST", body: JSON.stringify(payload) });
 
 /**
- * Login a user.
- * @param {{ loginIdentifier: string, password: string, role: string }} payload
+ * Register a new user.
+ * payload MUST include pkPre (Kyber768 public key, base64).
+ * The secret key is generated browser-side and NEVER included here.
  */
-export const loginUser = (payload) =>
-  apiCall("/auth/login", { method: "POST", body: JSON.stringify(payload) });
+export const registerUser = (payload) => apiCall("/auth/register", { method: "POST", body: JSON.stringify(payload) });
+
+// ── Records ───────────────────────────────────────────────────────────────────
+
+export const uploadRecord = (data) => apiCall("/records/upload", { method: "POST", body: JSON.stringify(data) });
+export const getRecords   = ()     => apiCall("/records");
+export const deleteRecord = (id)   => apiCall(`/records/${id}`, { method: "DELETE" });
+
+// ── Requests ──────────────────────────────────────────────────────────────────
+
+export const getRequests   = ()     => apiCall("/requests");
+export const createRequest = (data) => apiCall("/requests", { method: "POST", body: JSON.stringify(data) });
 
 /**
- * Register a new user (patient or doctor).
- * @param {{ name: string, email: string, password: string, role: string, phone?: string, medicalId?: string, specialization?: string, department?: string, hospital?: string }} payload
+ * Approve a request.
+ *
+ * body contains ONLY the re-encrypted bundle produced by clientSideRekey():
+ *   { ct_kem2, key_capsule, kc_nonce, kc_tag }
+ *
+ * The patient's secret key (skOwner) is NEVER in this payload.
+ * Re-encryption ran entirely in the browser before this call was made.
  */
-export const registerUser = (payload) =>
-  apiCall("/auth/register", { method: "POST", body: JSON.stringify(payload) });
+export const approveRequest = (id, rekeyBundle) =>
+  apiCall(`/requests/${id}/approve`, { method: "POST", body: JSON.stringify(rekeyBundle) });
 
-// ── Records ────────────────────────────────────────────────────────────────
+export const rejectRequest = (id) =>
+  apiCall(`/requests/${id}/reject`, { method: "POST" });
 
-/**
- * Upload a medical record.
- * @param {{ title: string, type: string, department: string, fileName: string, fileBase64: string, mimeType: string }} data
- */
-export const uploadRecord = (data) =>
-  apiCall("/records/upload", { method: "POST", body: JSON.stringify(data) });
+// ── Doctor ────────────────────────────────────────────────────────────────────
 
-export const getRecords   = ()    => apiCall("/records");
-export const deleteRecord = (id)  => apiCall(`/records/${id}`, { method: "DELETE" });
+export const discoverRecords = (data) => apiCall("/records/discover", { method: "POST", body: JSON.stringify(data) });
+export const getMyRequests   = ()     => apiCall("/requests/mine");
+export const fetchRecord     = (id)   => apiCall(`/requests/${id}/fetch`);
 
-// ── Requests ───────────────────────────────────────────────────────────────
-
-export const getRequests    = ()   => apiCall("/requests");
-export const createRequest  = (data) => apiCall("/requests", { method: "POST", body: JSON.stringify(data) });
-
-/** Dedicated approve endpoint (POST /requests/:id/approve) */
-export const approveRequest = (id) => apiCall(`/requests/${id}/approve`, { method: "POST" });
-
-/** Dedicated reject endpoint (POST /requests/:id/reject) */
-export const rejectRequest  = (id) => apiCall(`/requests/${id}/reject`,  { method: "POST" });
-
-// ── Doctor ─────────────────────────────────────────────────────────────────
-
-export const discoverRecords  = (data) => apiCall("/records/discover",  { method: "POST", body: JSON.stringify(data) });
-export const getMyRequests    = ()     => apiCall("/requests/mine");
-export const fetchRecord      = (id)   => apiCall(`/requests/${id}/fetch`);
-
-// ── Logs ───────────────────────────────────────────────────────────────────
+// ── Logs ──────────────────────────────────────────────────────────────────────
 
 export const getLogs = () => apiCall("/logs");
 
-// ── Profile ────────────────────────────────────────────────────────────────
+// ── Profile ───────────────────────────────────────────────────────────────────
 
 export const getProfile = () => apiCall("/profile");
 
-// ── Admin ──────────────────────────────────────────────────────────────────
+// ── Admin ─────────────────────────────────────────────────────────────────────
 
 export const getPendingApplications = ()   => apiCall("/auth/applications/pending");
 export const approveApplication     = (id) => apiCall(`/auth/applications/${id}/approve`, { method: "POST" });

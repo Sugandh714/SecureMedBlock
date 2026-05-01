@@ -1,38 +1,48 @@
 // backend/controllers/authController.js
+//
+// KEY SECURITY CHANGES vs previous version:
+//
+//   OLD: Server called preKeygen() → stored pk, returned sk over network
+//   NEW: Browser generates keypair → sends only pk → sk never touches server
+//
+//   Removed:
+//     - generatePreKeypair() helper (server no longer generates keys)
+//     - skPre from register() response
+//     - skPre from login() response (the "freshSk on first login" path)
+//     - preKeygen import
+//
+//   Added:
+//     - pkPre accepted from req.body in register()
+//     - Validation that pkPre is present for patients
+//     - Doctor approval: pkPre accepted via req.body (admin relays it
+//       from the doctor's own browser-generated key, or doctor sets it
+//       on first login via /profile/set-pk endpoint — see note below)
+
 import User              from "../models/user.js";
 import bcrypt            from "bcrypt";
 import jwt               from "jsonwebtoken";
 import DoctorApplication from "../models/DoctorApplication.js";
-import { preKeygen }     from "../services/preService.js";
-
-/* ─────────────────────────────────────────────────────────────
-   Helper — generate PRE keypair from the PRE microservice.
-   Returns { pk, sk } or null if the service is unreachable
-   (so registration doesn't hard-fail during local dev without
-   the PRE service running — just log the warning).
-───────────────────────────────────────────────────────────── */
-async function generatePreKeypair() {
-  try {
-    const keys = await preKeygen(); // { sk, pk }
-    if (!keys?.pk || !keys?.sk) throw new Error("preKeygen returned incomplete keys");
-    return keys;
-  } catch (err) {
-    console.error("⚠️  PRE keygen failed — user will have pkPre=null:", err.message);
-    return null;
-  }
-}
+// preKeygen import removed — server no longer generates keys
 
 /* ================= REGISTER ================= */
 export const register = async (req, res) => {
   try {
     const {
       name, email, password, role,
+      pkPre,                              // ← browser-generated public key
       medicalId, specialization, department,
-      phone, experience, hospital
+      phone, experience, hospital,
     } = req.body;
 
     if (!name || !email || !password || !role) {
       return res.status(400).json({ message: "Name, email, password and role are required" });
+    }
+
+    // Patients MUST supply a public key — it was generated in their browser
+    if (role === "patient" && !pkPre) {
+      return res.status(400).json({
+        message: "pkPre (Kyber768 public key) is required. Generate it in the browser before registering."
+      });
     }
 
     const existingUser = await User.findOne({ email });
@@ -50,31 +60,27 @@ export const register = async (req, res) => {
     const salt           = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // ── Patient registration ───────────────────────────────────────────
+    // ── Patient registration ───────────────────────────────────────────────
     if (role === "patient") {
-      // Generate PRE keypair — pk stored in DB, sk sent to client once
-      const keys = await generatePreKeypair();
-
       const newUser = new User({
         name,
         email,
         password:   hashedPassword,
         role:       "patient",
-        phone:      phone       || null,
-        department: department  || null,
-        pkPre:      keys?.pk    || null,   // ← public key stored server-side
+        phone:      phone      || null,
+        department: department || null,
+        pkPre,    // ← stored as-is; sk was never sent here
       });
       await newUser.save();
 
+      // No skPre in response — browser already has it
       return res.status(201).json({
         message: "Patient account created successfully",
-        // sk returned ONCE — client must save it locally (never re-sent)
-        skPre: keys?.sk || null,
-        user:  { id: newUser._id, name, email, role: "patient" }
+        user: { id: newUser._id, name, email, role: "patient" },
       });
     }
 
-    // ── Doctor registration (pending approval) ─────────────────────────
+    // ── Doctor registration (pending approval) ─────────────────────────────
     if (role === "doctor") {
       if (!medicalId || !specialization || !department) {
         return res.status(400).json({
@@ -85,19 +91,19 @@ export const register = async (req, res) => {
       const newApplication = new DoctorApplication({
         name,
         email,
-        password:      hashedPassword,
+        password:       hashedPassword,
         medicalId,
         specialization,
         department,
         phone:      phone      || null,
         experience: experience || null,
         hospital:   hospital   || "City General Hospital",
-        status:     "Pending"
+        // pkPre stored on application so it's available when admin approves
+        pkPre:      pkPre      || null,
+        status:     "Pending",
       });
       await newApplication.save();
 
-      // Doctor keypair is generated when admin APPROVES, not here,
-      // because the User record doesn't exist yet.
       return res.status(201).json({
         message: "Doctor registration request submitted. Awaiting admin approval."
       });
@@ -125,6 +131,8 @@ export const getPendingApplications = async (req, res) => {
 };
 
 /* ================= APPROVE DOCTOR ================= */
+// Doctor's pkPre comes from the DoctorApplication (browser-generated at
+// registration time). No server-side keygen. No sk ever returned.
 export const approveDoctor = async (req, res) => {
   try {
     const { id }         = req.params;
@@ -138,9 +146,6 @@ export const approveDoctor = async (req, res) => {
       return res.status(400).json({ message: "Application already processed" });
     }
 
-    // Generate PRE keypair for the new doctor at approval time
-    const keys = await generatePreKeypair();
-
     const newDoctor = new User({
       name:           application.name,
       email:          application.email,
@@ -152,7 +157,7 @@ export const approveDoctor = async (req, res) => {
       phone:          application.phone,
       experience:     application.experience,
       hospital:       application.hospital,
-      pkPre:          keys?.pk || null,   // ← stored on the User document
+      pkPre:          application.pkPre || null, // ← came from browser at registration
     });
     await newDoctor.save();
 
@@ -161,12 +166,10 @@ export const approveDoctor = async (req, res) => {
     application.approvedAt = new Date();
     await application.save();
 
-    // skPre is returned here so admin can relay it to the doctor via
-    // a secure channel (email / notification). It is never stored server-side.
+    // No skPre in response — doctor already saved it at registration
     res.json({
       message:  `Doctor ${application.name} approved successfully`,
       doctorId: newDoctor._id,
-      skPre:    keys?.sk || null,   // relay this securely to the doctor
     });
   } catch (err) {
     res.status(500).json({ message: "Approval failed", error: err.message });
@@ -188,13 +191,13 @@ export const rejectDoctor = async (req, res) => {
     }
 
     application.status          = "Rejected";
-    application.rejectionReason = reason      || "Not approved by admin";
-    application.rejectedBy      = rejectedBy  || "Admin";
+    application.rejectionReason = reason     || "Not approved by admin";
+    application.rejectedBy      = rejectedBy || "Admin";
     await application.save();
 
     res.json({
       message: `Application from ${application.name} has been rejected`,
-      reason:  application.rejectionReason
+      reason:  application.rejectionReason,
     });
   } catch (err) {
     res.status(500).json({ message: "Rejection failed", error: err.message });
@@ -202,6 +205,9 @@ export const rejectDoctor = async (req, res) => {
 };
 
 /* ================= LOGIN ================= */
+// Removed: "freshSk on first login" path — that pattern sent sk over the
+// network which defeats the whole point. Users without pkPre must re-register
+// or use the /profile/set-pk endpoint to upload a browser-generated pk.
 export const login = async (req, res) => {
   try {
     const { loginIdentifier, email, password, role } = req.body;
@@ -232,20 +238,6 @@ export const login = async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    // If this is an existing patient/doctor who has no pkPre yet
-    // (created before this fix), generate keys now on first login.
-    let freshSk = null;
-    if (!user.pkPre) {
-      console.log(`🔑 Generating missing PRE keys for ${user.email} on login...`);
-      const keys = await generatePreKeypair();
-      if (keys) {
-        user.pkPre = keys.pk;
-        await user.save();
-        freshSk = keys.sk; // sent down so the client can cache it
-        console.log("✅ PRE keys generated and pk saved.");
-      }
-    }
-
     const token = jwt.sign(
       { id: user._id, role: user.role },
       process.env.JWT_SECRET,
@@ -255,16 +247,12 @@ export const login = async (req, res) => {
     res.status(200).json({
       message: "Login successful",
       token,
-      // skPre is included when keys were just generated (first login for old accounts)
-      // Undefined otherwise — client should already have it from registration
-      ...(freshSk && { skPre: freshSk }),
       user: {
-        id:    user._id,
-        name:  user.name,
-        email: user.email,
-        role:  user.role,
-        // Let client know whether a key is configured
-        hasPkPre: !!user.pkPre,
+        id:       user._id,
+        name:     user.name,
+        email:    user.email,
+        role:     user.role,
+        hasPkPre: !!user.pkPre, // lets frontend warn if key is missing
       },
     });
   } catch (err) {

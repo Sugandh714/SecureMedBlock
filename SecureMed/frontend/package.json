@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@dashlane/pqc-kem-kyber768-browser": "^1.0.0",
+    "@noble/post-quantum": "^0.6.1",
     "axios": "^1.14.0",
     "lucide-react": "^1.7.0",
     "react": "^19.2.4",

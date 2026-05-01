@@ -17,7 +17,10 @@ const doctorApplicationSchema = new mongoose.Schema({
   rejectionReason: String,
   submittedAt:     { type: Date, default: Date.now },
   approvedAt:      Date,
-
+  pkPre: {
+  type:    String,
+  default: null,
+},
   // ── Added: Fabric identity created on approval ─
   fabricUserId:    { type: String, default: null }   // e.g. "doctor_<mongoId>"
 
